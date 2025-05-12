@@ -13,7 +13,7 @@ import pyarrow
 
 
 
-url = "https://open-api-v4.coinglass.com/api/futures/orderbook/history?exchange=Binance&symbol=BTCUSDT&interval=4h&limit=1"
+url = "https://open-api-v4.coinglass.com/api/futures/orderbook/history?exchange=Binance&symbol=BTCUSDT&interval=4h&limit=4500&start_time=1731436209918&end_time=1747071009918&unit=usd"
 
 headers = {"CG-API-KEY": "a5b89c9d85dc40ffb8144fbecf0fb18f"}
 

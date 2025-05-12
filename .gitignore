@@ -12,3 +12,4 @@ wheels/
 old/
 /old
 old
+**/.claude/settings.local.json

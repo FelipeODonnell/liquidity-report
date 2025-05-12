@@ -89,6 +89,47 @@ data/
     └── ...
 ```
 
+### Generate Symbol-Specific Files
+
+The repository includes two scripts for generating cryptocurrency-specific versions of API files:
+
+#### 1. Symbol Files (Options & Spot Market)
+
+Use the `symbol-files.py` script to create cryptocurrency-specific versions of options and spot market API files:
+
+```bash
+# Generate API files for BTC, ETH, XRP, and SOL
+python symbol-files.py
+```
+
+This script generates separate files for each cryptocurrency (BTC, ETH, XRP, SOL) for the following endpoints:
+- Options files: max pain and info
+- Spot market files: pairs markets and price history
+- Spot orderbook files: ask bids history
+- Spot taker buy/sell files: volume history
+
+#### 2. Futures Market Files
+
+Use the `change-files.py` script to create cryptocurrency-specific versions of futures API files:
+
+```bash
+# Generate futures API files for BTC, ETH, XRP, and SOL
+python change-files.py
+```
+
+This script generates separate files for each cryptocurrency (BTC, ETH, XRP, SOL) for the following futures endpoints:
+- Futures taker buy/sell volume history
+- Futures orderbook aggregated ask bids history
+- Futures liquidation aggregated coin history
+- Futures liquidation exchange list
+- Futures taker buy/sell volume exchange list
+- Futures funding rate (OI and volume weight history)
+- Futures open interest data (aggregated history, stablecoin, coin margin)
+- Futures exchange open interest (list and history chart)
+- Futures pairs markets
+
+When executed, each file will save data for its specific cryptocurrency in the appropriate date folder.
+
 ### Data Processing Scripts
 
 #### Convert to Parquet
@@ -133,6 +174,17 @@ python clean_backups.py
 
 This script removes all backup files (with .bak extension) created during the modification process, keeping your project directory clean.
 
+### Remove Duplicate Files
+
+Use the `remove_duplicates.py` script to remove base files that now have symbol-specific versions:
+
+```bash
+# Remove duplicate base files
+python remove_duplicates.py
+```
+
+This script removes the original base files that now have cryptocurrency-specific versions (with _BTC, _ETH, _XRP, _SOL suffixes). Before removal, it creates a backup of all files in a `duplicate_files_backup` directory for safety.
+
 ## Project Structure
 
 - `coinglass-api/`: Python scripts to access CoinGlass API endpoints
@@ -143,6 +195,9 @@ This script removes all backup files (with .bak extension) created during the mo
 - `parquet.py`: Script to convert data storage from CSV to Parquet format
 - `create_target.py`: Script to filter exchange data for target cryptocurrencies
 - `clean_backups.py`: Script to remove backup files from the project
+- `symbol-files.py`: Script to generate cryptocurrency-specific API files for options and spot markets
+- `change-files.py`: Script to generate cryptocurrency-specific API files for futures markets
+- `remove_duplicates.py`: Script to remove base files that have symbol-specific versions
 
 ## API Categories
 

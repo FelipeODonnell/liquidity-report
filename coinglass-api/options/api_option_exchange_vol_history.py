@@ -9,7 +9,7 @@ import pyarrow
 
 
 
-url = "https://open-api-v4.coinglass.com/api/option/exchange-vol-history?symbol=BTC&unit=USD"
+url = "https://open-api-v4.coinglass.com/api/option/exchange-vol-history?symbol=BTC&unit=USD&start_time=1731436209918&end_time=1747071009918"
 
 headers = {
     "accept": "application/json",

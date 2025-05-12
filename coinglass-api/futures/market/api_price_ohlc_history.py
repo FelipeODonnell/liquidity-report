@@ -14,7 +14,7 @@ import pyarrow
 
 
 
-url = "https://open-api-v4.coinglass.com/api/futures/price/history?exchange=Binance&symbol=BTCUSDT&interval=4h&limit=10"
+url = "https://open-api-v4.coinglass.com/api/futures/price/history?exchange=Binance&symbol=BTCUSDT&interval=4h&limit=4500&start_time=1731436209918&end_time=1747071009918&unit=usd"
 
 headers = {
     "accept": "application/json",

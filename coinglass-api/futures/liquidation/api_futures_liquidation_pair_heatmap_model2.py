@@ -13,7 +13,7 @@ import pyarrow
 
 
 
-url = "https://open-api-v4.coinglass.com/api/futures/liquidation/heatmap/model2?exchange=Binance&symbol=BTCUSDT&range=3d"
+url = "https://open-api-v4.coinglass.com/api/futures/liquidation/heatmap/model2?exchange=Binance&symbol=BTCUSDT&range=3d&start_time=1731436209918&end_time=1747071009918"
 
 headers = {
     "accept": "application/json",

@@ -9,7 +9,7 @@ import pyarrow
 
 
 
-url = "https://open-api-v4.coinglass.com/api/etf/bitcoin/price/history?ticker=GBTC&range=1d"
+url = "https://open-api-v4.coinglass.com/api/etf/bitcoin/price/history?ticker=GBTC&range=all&start_time=1731436209918&end_time=1747071009918"
 
 headers = {
     "accept": "application/json",

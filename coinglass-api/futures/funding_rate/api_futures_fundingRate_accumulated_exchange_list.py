@@ -8,7 +8,7 @@ import pyarrow
 
 
 
-url = "https://open-api-v4.coinglass.com/api/futures/funding-rate/accumulated-exchange-list?range=1d"
+url = "https://open-api-v4.coinglass.com/api/futures/funding-rate/accumulated-exchange-list?range=1d&start_time=1731436209918&end_time=1747071009918"
 
 headers = {
     "accept": "application/json",

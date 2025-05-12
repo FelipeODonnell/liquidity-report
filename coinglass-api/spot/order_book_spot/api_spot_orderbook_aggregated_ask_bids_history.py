@@ -8,7 +8,7 @@ import pyarrow
 
 
 
-url = "https://open-api-v4.coinglass.com/api/spot/orderbook/aggregated-ask-bids-history?exchange_list=Binance&symbol=BTC&interval=h1"
+url = "https://open-api-v4.coinglass.com/api/spot/orderbook/aggregated-ask-bids-history?exchange_list=Binance&symbol=BTC&interval=4h&limit=4500&start_time=1731436209918&end_time=1747071009918&unit=usd"
 
 headers = {
     "accept": "application/json",

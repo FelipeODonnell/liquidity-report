@@ -9,7 +9,7 @@ import pyarrow
 
 
 
-url = "https://open-api-v4.coinglass.com/api/exchange/balance/list?symbol=BTC"
+url = "https://open-api-v4.coinglass.com/api/exchange/balance/list?symbol=BTC&start_time=1731436209918&end_time=1747071009918"
 
 headers = {
     "accept": "application/json",

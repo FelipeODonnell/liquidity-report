@@ -12,7 +12,7 @@ import pyarrow
 
 
 
-url = "https://open-api-v4.coinglass.com/api/futures/liquidation/aggregated-map?symbol=BTC&range=1d"
+url = "https://open-api-v4.coinglass.com/api/futures/liquidation/aggregated-map?symbol=BTC&range=1d&start_time=1731436209918&end_time=1747071009918"
 
 headers = {
     "accept": "application/json",

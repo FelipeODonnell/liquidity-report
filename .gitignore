@@ -8,8 +8,22 @@ wheels/
 
 # Virtual environments
 .venv
+venv/
 
+# Project-specific directories
 old/
-/old
-old
+notes/
+.DS_Store
+
+# Claude AI assistant files
+**/.claude/
 **/.claude/settings.local.json
+
+# Backup files
+*.bak
+*.time.bak
+
+# Python local version
+.python-version
+# Streamlit secrets
+.streamlit/secrets.toml

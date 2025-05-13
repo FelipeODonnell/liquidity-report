@@ -10,12 +10,15 @@ import pandas as pd
 import os
 from datetime import datetime
 import pyarrow
+import streamlit as st
 
 
 
-url = "https://open-api-v4.coinglass.com/api/futures/orderbook/history?exchange=Binance&symbol=BTCUSDT&interval=4h&limit=4500&start_time=1731436209918&end_time=1747071009918&unit=usd"
 
-headers = {"CG-API-KEY": "a5b89c9d85dc40ffb8144fbecf0fb18f"}
+
+url = "https://open-api-v4.coinglass.com/api/futures/orderbook/history?exchange=Binance&symbol=BTCUSDT&interval=4h&limit=4500&start_time=1731498631418&end_time=1747133431418&unit=usd"
+
+headers = {"CG-API-KEY": st.secrets["coinglass_api"]["api_key"]}
 
 response = requests.get(url, headers=headers)
 

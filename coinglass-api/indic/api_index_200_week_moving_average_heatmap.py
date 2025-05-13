@@ -5,6 +5,9 @@ import pandas as pd
 import os
 from datetime import datetime
 import pyarrow
+import streamlit as st
+
+
 
 
 
@@ -12,7 +15,7 @@ url = "https://open-api-v4.coinglass.com/api/index/200-week-moving-average-heatm
 
 headers = {
     "accept": "application/json",
-    "CG-API-KEY": "a5b89c9d85dc40ffb8144fbecf0fb18f"
+    "CG-API-KEY": st.secrets["coinglass_api"]["api_key"]
 }
 
 response = requests.get(url, headers=headers)

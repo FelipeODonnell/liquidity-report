@@ -198,7 +198,7 @@ class RateLimiter:
     Rate limiter to ensure we don't exceed API rate limits.
     Implements a sliding window to track requests over the past minute.
     """
-    def __init__(self, max_requests_per_minute=29):
+    def __init__(self, max_requests_per_minute=15):
         self.max_requests = max_requests_per_minute
         self.window_size = 60  # 60 seconds = 1 minute
         self.requests = deque()

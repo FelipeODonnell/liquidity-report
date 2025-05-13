@@ -4,14 +4,17 @@ import pandas as pd
 import os
 from datetime import datetime
 import pyarrow
+import streamlit as st
 
 
 
-url = "https://open-api-v4.coinglass.com/api/futures/liquidation/exchange-list?range=4h&symbol=BTC&start_time=1731436209918&end_time=1747071009918"
+
+
+url = "https://open-api-v4.coinglass.com/api/futures/liquidation/exchange-list?range=4h&symbol=BTC&start_time=1731498631418&end_time=1747133431418"
 
 headers = {
     "accept": "application/json",
-    "CG-API-KEY": "a5b89c9d85dc40ffb8144fbecf0fb18f"
+    "CG-API-KEY": st.secrets["coinglass_api"]["api_key"]
 }
 
 response = requests.get(url, headers=headers)
@@ -40,8 +43,6 @@ try:
         
         # Generate filename without timestamp
         base_filename = os.path.splitext(os.path.basename(__file__))[0]
-        # Add symbol to base filename
-        base_filename = f"{base_filename}_BTC"
         file_path = os.path.join(output_dir, f"{base_filename}.parquet")
         
         # Save as parquet

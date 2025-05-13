@@ -1,10 +1,13 @@
 import requests
+import streamlit as st
+
+
 
 url = "https://open-api-v4.coinglass.com/api/futures/supported-exchange-pairs"
 
 headers = {
     "accept": "application/json",
-    "CG-API-KEY": "a5b89c9d85dc40ffb8144fbecf0fb18f"
+    "CG-API-KEY": st.secrets["coinglass_api"]["api_key"]
 }
 
 response = requests.get(url, headers=headers)

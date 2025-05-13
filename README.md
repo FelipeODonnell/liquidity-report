@@ -1,227 +1,195 @@
-# Izun Liquidity Report
+# Izun Crypto Liquidity Report
 
-Cryptocurrency liquidity reporting tool using the CoinGlass API.
+A comprehensive cryptocurrency liquidity dashboard and data collection tool using the CoinGlass API. This application provides detailed market analysis for cryptocurrency markets, including ETFs, futures, spot markets, options, and various market indicators.
+
+## Project Components
+
+The project consists of two main components:
+1. **Data Collection**: Python scripts to collect and process data from the CoinGlass API
+2. **Data Visualization**: Streamlit application for visualizing collected market data
 
 ## Project Setup
 
-### Creating a Virtual Environment
+### Prerequisites
 
-```bash
-# Create virtual environment
-python3 -m venv venv
+- Python 3.11 or higher
+- pip or [uv](https://github.com/astral-sh/uv) for package management
+- Required packages: streamlit, pandas, plotly, pyarrow, numpy
+- CoinGlass API key (get one at [CoinGlass](https://coinglass.com/))
 
-# Activate virtual environment
-source venv/bin/activate
+### Setup Instructions
 
-# Deactivate when done
-deactivate
-```
+1. **Clone the Repository**
+   ```bash
+   git clone <repository-url>
+   cd izun-liquidity-report-v5
+   ```
 
-### Install Dependencies
+2. **Create a Virtual Environment**
+   ```bash
+   # Create virtual environment
+   python3 -m venv .venv
+   
+   # Activate virtual environment
+   # On macOS/Linux:
+   source .venv/bin/activate
+   # On Windows:
+   .venv\Scripts\activate
+   ```
 
-```bash
-# Install requirements
-pip install -e .
-```
+3. **Install Dependencies**
+   ```bash
+   # Install all dependencies
+   pip install -e .
+   
+   # Or using uv (faster)
+   uv pip install -e .
+   ```
+
+4. **Configure API Keys**
+   
+   Create a `.streamlit/secrets.toml` file with your API keys:
+   ```toml
+   [coinglass_api]
+   api_key = "your_coinglass_api_key_here"
+   ```
 
 ## Running the Application
 
-```bash
-# Run the main application
-python main.py
-
-# Run with Streamlit (if implemented)
-streamlit run main.py
-```
-
-## Data Collection Tools
-
-This repository includes tools to collect and store data from the CoinGlass API:
-
-### Modify API Files
-
-Use the `modify_api_files.py` script to update all the API files to save responses as CSV:
+### Data Collection
 
 ```bash
-# Modify all API files to save responses as CSV
-python modify_api_files.py
-
-# Dry run (don't make actual changes)
-python modify_api_files.py --dry-run
-
-# Create backups before modifying
-python modify_api_files.py --backup
-
-# Modify a single file
-python modify_api_files.py --single coinglass-api/etf/api_etf_bitcoin_list.py
-```
-
-### Run Reports
-
-Use the `report.py` tool to run all API files and save data to a date-based folder structure:
-
-```bash
-# First, discover and list all API files
-python report.py --discover
-
-# Run all non-commented API files
+# Run the data collection script
 python report.py
 
 # Specify custom rate limit (defaults to 29 requests/minute)
 python report.py --max-rate 15
 ```
 
-The `report.py` file will automatically generate a list of all API files in the `coinglass-api` directory. To exclude specific files from running, simply add a `#` at the beginning of the line in the `report.py` file.
-
-Features:
-- Rate limiting to prevent API rate limit errors (default: 29 requests/minute)
-- Date-based organization of collected data
-- Ability to selectively run API endpoints
-
-Data will be saved to folders based on the current date:
-```
-data/
-└── 20250512/  # Date format: YYYYMMDD
-    ├── etf/
-    │   └── api_etf_bitcoin_list.csv
-    ├── futures/
-    │   └── ...
-    └── ...
-```
-
-### Generate Symbol-Specific Files
-
-The repository includes two scripts for generating cryptocurrency-specific versions of API files:
-
-#### 1. Symbol Files (Options & Spot Market)
-
-Use the `symbol-files.py` script to create cryptocurrency-specific versions of options and spot market API files:
+### Dashboard Visualization
 
 ```bash
-# Generate API files for BTC, ETH, XRP, and SOL
-python symbol-files.py
+# Recommended method (direct Streamlit launch)
+streamlit run streamlit/app.py
+
+# Alternative method (may cause relaunch issues)
+python main.py
 ```
 
-This script generates separate files for each cryptocurrency (BTC, ETH, XRP, SOL) for the following endpoints:
-- Options files: max pain and info
-- Spot market files: pairs markets and price history
-- Spot orderbook files: ask bids history
-- Spot taker buy/sell files: volume history
+The dashboard will open automatically in your default web browser at http://localhost:8501.
 
-#### 2. Futures Market Files
+> **Important**: If you experience app relaunch issues, please use the direct Streamlit launch method and refer to the `relaunchfix.md` file for detailed solutions.
 
-Use the `change-files.py` script to create cryptocurrency-specific versions of futures API files:
+## Data Collection Features
 
-```bash
-# Generate futures API files for BTC, ETH, XRP, and SOL
-python change-files.py
-```
+- **Date-based Data Organization**: Data is saved in date folders (format: YYYYMMDD)
+- **Rate Limiting**: Prevents API rate limit errors (default: 29 requests/minute)
+- **Selective Endpoint Execution**: Comment out specific API endpoints in `report.py` to skip them
+- **Time Parameter Refresh**: Use `refresh_time.py` to update time ranges for historical data
 
-This script generates separate files for each cryptocurrency (BTC, ETH, XRP, SOL) for the following futures endpoints:
-- Futures taker buy/sell volume history
-- Futures orderbook aggregated ask bids history
-- Futures liquidation aggregated coin history
-- Futures liquidation exchange list
-- Futures taker buy/sell volume exchange list
-- Futures funding rate (OI and volume weight history)
-- Futures open interest data (aggregated history, stablecoin, coin margin)
-- Futures exchange open interest (list and history chart)
-- Futures pairs markets
+## Dashboard Features
 
-When executed, each file will save data for its specific cryptocurrency in the appropriate date folder.
+The Streamlit dashboard provides interactive visualizations across multiple pages:
 
-### Data Processing Scripts
+- **Overview Dashboard**: Key market metrics and trends
+- **ETF Analysis**: Bitcoin and Ethereum ETF flows, AUM, and performance
+- **Futures Markets**: Funding rates, liquidations, open interest, and market data
+- **Spot Markets**: Exchange comparisons, order books, and market data
+- **Indicators**: Technical indicators and market sentiment metrics
+- **On-Chain Data**: Exchange balances and blockchain transaction data
+- **Options Markets**: Open interest, max pain, and options data
+- **Historical Data**: Access to historical market data
 
-#### Convert to Parquet
+## API Data Categories
 
-Use the `parquet.py` script to convert data storage from CSV to Parquet format:
+This application collects and visualizes data across several categories:
 
-```bash
-# Convert all API files to save as parquet
-python parquet.py
-
-# Dry run (don't make actual changes)
-python parquet.py --dry-run
-
-# Create backups before modifying
-python parquet.py --backup
-
-# Modify a single file
-python parquet.py --single coinglass-api/etf/api_etf_bitcoin_list.py
-```
-
-Parquet files provide better compression and query performance than CSV files.
-
-#### Filter Exchange Data
-
-Use the `create_target.py` script to filter the exchanges.csv file:
-
-```bash
-# Filter exchanges.csv to only include BTC, ETH, XRP, and SOL
-python create_target.py
-```
-
-This script creates a new file called `target_data.csv` that contains only the rows from `exchanges.csv` where the base asset is one of the target cryptocurrencies (BTC, ETH, XRP, or SOL).
-
-#### Clean Backup Files
-
-Use the `clean_backups.py` script to remove backup files:
-
-```bash
-# Remove all .bak files from the coinglass-api directory
-python clean_backups.py
-```
-
-This script removes all backup files (with .bak extension) created during the modification process, keeping your project directory clean.
-
-### Remove Duplicate Files
-
-Use the `remove_duplicates.py` script to remove base files that now have symbol-specific versions:
-
-```bash
-# Remove duplicate base files
-python remove_duplicates.py
-```
-
-This script removes the original base files that now have cryptocurrency-specific versions (with _BTC, _ETH, _XRP, _SOL suffixes). Before removal, it creates a backup of all files in a `duplicate_files_backup` directory for safety.
+- **ETF Data**: Bitcoin and Ethereum ETF metrics
+- **Futures Market Data**: Funding rates, liquidations, open interest, order books
+- **Spot Market Data**: Exchange prices, volumes, order books
+- **Market Indicators**: Fear & Greed index, technical indicators
+- **On-chain Data**: Exchange balances, transaction volumes
+- **Options Data**: Options open interest, max pain points
 
 ## Project Structure
 
-- `coinglass-api/`: Python scripts to access CoinGlass API endpoints
-- `data/YYYYMMDD/`: Data files with saved API responses organized by date
-- `main.py`: Entry point for the application
-- `report.py`: Tool to run all API endpoints and save data by date
-- `modify_api_files.py`: Script to update API files to save CSV data
-- `parquet.py`: Script to convert data storage from CSV to Parquet format
-- `create_target.py`: Script to filter exchange data for target cryptocurrencies
-- `clean_backups.py`: Script to remove backup files from the project
-- `symbol-files.py`: Script to generate cryptocurrency-specific API files for options and spot markets
-- `change-files.py`: Script to generate cryptocurrency-specific API files for futures markets
-- `remove_duplicates.py`: Script to remove base files that have symbol-specific versions
+```
+izun-liquidity-report-v5/
+├── coinglass-api/           # API data collection scripts
+│   ├── etf/                 # ETF-related API scripts
+│   ├── futures/             # Futures market API scripts
+│   ├── indic/               # Market indicators API scripts
+│   ├── on_chain/            # On-chain data API scripts
+│   ├── options/             # Options market API scripts
+│   └── spot/                # Spot market API scripts
+├── data/                    # Collected data storage
+│   └── YYYYMMDD/            # Date-based folders
+├── streamlit/               # Streamlit dashboard
+│   ├── app.py               # Main dashboard app
+│   ├── components/          # Reusable UI components
+│   ├── pages/               # Dashboard pages
+│   └── utils/               # Utility functions
+├── main.py                  # Alternative entry point
+├── report.py                # Data collection script
+├── refresh_time.py          # Time parameter refresh script
+├── pyproject.toml           # Project configuration
+├── README.md                # Project documentation
+├── userguide.md             # Detailed user guide
+├── upload.md                # GitHub & Streamlit deployment guide
+└── relaunchfix.md           # Solution for app relaunch issues
+```
 
-## API Categories
+## Deployment
 
-- **ETF Data**: Bitcoin and Ethereum ETF metrics (flows, assets, etc.)
-- **Futures Market Data**: Funding rates, liquidations, open interest, etc.
-- **Market Indicators**: Various market indicators like Fear & Greed index
-- **On-chain Data**: Exchange balances and transactions
-- **Options Data**: Options exchange information
-- **Spot Market Data**: Order books and market data
+### GitHub Deployment
+
+Before pushing to GitHub:
+
+1. Ensure sensitive information like API keys are not included in the repository
+2. Check that `.streamlit/secrets.toml` is in your `.gitignore` file
+3. See `upload.md` for detailed deployment preparation steps
+
+### Streamlit Cloud Deployment
+
+To deploy on Streamlit Cloud:
+
+1. Push your code to GitHub
+2. Connect your repository to Streamlit Cloud
+3. Configure your API keys in Streamlit Cloud's secrets management
+4. Set your Python version to 3.11+
+5. See `upload.md` for complete instructions
+
+## Troubleshooting
+
+If you encounter issues running the application:
+
+1. **Missing Data**: Ensure data collection has been run successfully 
+2. **App Relaunches**: Use direct Streamlit launch: `streamlit run streamlit/app.py`
+3. **Import Errors**: Verify all dependencies are installed correctly
+4. **API Rate Limiting**: Reduce the rate limit in `report.py` with `--max-rate`
+5. **Missing Charts**: Some visualizations require specific data files to be present
+6. **API Key Issues**: Verify your CoinGlass API key is correctly configured in `.streamlit/secrets.toml`
+
+For more detailed information, consult the `userguide.md` file.
+
+## Additional Resources
+
+- **User Guide**: For comprehensive usage instructions, see `userguide.md`
+- **Relaunch Fix**: For solutions to app relaunch issues, see `relaunchfix.md`
+- **Deployment Guide**: For GitHub and Streamlit deployment, see `upload.md`
+
+## Data Storage
+
+All collected data is stored in Parquet format, which provides:
+- Efficient compression
+- Fast query performance
+- Column-oriented storage
+- Strong typing
 
 ## Target Cryptocurrencies
 
-Initial tracking focused on the top cryptocurrencies:
+The application focuses on the following cryptocurrencies:
 - Bitcoin (BTC)
 - Ethereum (ETH)
 - Solana (SOL)
 - Ripple (XRP)
-
-## Git Commands
-
-```bash
-git init
-git add .
-git commit -m "first commit"
-git branch -M main
-git remote add origin https://github.com/FelipeODonnell/streamlit-stablecoin-dashboard.git
-```

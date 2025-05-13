@@ -31,5 +31,6 @@ notes/
 
 # API-related files
 report.py
+refresh_time.py
 coinglass-api/
 data/*/

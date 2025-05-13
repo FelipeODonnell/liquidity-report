@@ -34,8 +34,10 @@ def render_sidebar():
     of the application, including filters and navigation links.
     """
     try:
-        # Add logo at the top of the sidebar
-        st.sidebar.image("/Users/felipeodonnell/Documents/Coding/Liquidity Report/izun-liquidity-report-v5/streamlit/izun_partners_logo.jpeg", width=120)
+        # Add logo at the top of the sidebar using a relative path for Streamlit Cloud compatibility
+        import os
+        image_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), "izun_partners_logo.jpeg")
+        st.sidebar.image(image_path, width=120)
         st.sidebar.title("Izun Liquidity Report")
         
         # Check data directory existence and show info

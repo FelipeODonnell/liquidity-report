@@ -96,12 +96,7 @@ def main():
     with st.spinner("Loading ETF data..."):
         data = load_etf_data()
     
-    # Get the last updated time
-    last_updated = get_data_last_updated()
-    last_updated_str = format_timestamp(last_updated) if last_updated else "Unknown"
-    
-    # Show data date info
-    st.caption(f"Data as of: {last_updated_str}")
+    # Removed data last updated reference
     
     # Check if data is available
     if not data:
@@ -198,14 +193,24 @@ def main():
             # AUM Visualization
             st.subheader("Assets Under Management")
             
-            # Create pie chart for AUM distribution
-            top_etfs = btc_etf_df.sort_values(by='aum_usd', ascending=False).head(10)
+            # Create pie chart for AUM distribution with improved formatting
+            # Import our enhanced chart utility
+            from utils.chart_utils import create_enhanced_pie_chart
             
-            fig = create_pie_chart(
-                top_etfs,
+            # Filter out any non-numeric or zero values
+            filtered_etfs = btc_etf_df.copy()
+            filtered_etfs['aum_usd'] = pd.to_numeric(filtered_etfs['aum_usd'], errors='coerce')
+            filtered_etfs = filtered_etfs.dropna(subset=['aum_usd'])
+            filtered_etfs = filtered_etfs[filtered_etfs['aum_usd'] > 0]
+            
+            # Create the enhanced pie chart
+            fig = create_enhanced_pie_chart(
+                filtered_etfs,
                 'aum_usd',
                 'ticker',
-                "Bitcoin ETF AUM Distribution (Top 10)"
+                "Bitcoin ETF AUM Distribution (Top 10)",
+                show_top_n=10,  # Show top 10 ETFs
+                min_percent=1.0  # Only group ETFs with less than 1% share
             )
             
             display_chart(fig)
@@ -242,6 +247,10 @@ def main():
                 )
                 
                 display_chart(apply_chart_theme(fig))
+                
+                # Set defaults in session state for backward compatibility
+                st.session_state.btc_etf_flows_time_range = 'All'
+                st.session_state.selected_time_range = 'All'
                 
                 # Cumulative flows chart
                 flow_df['cumulative_flow'] = flow_df[flow_col].cumsum()
@@ -410,12 +419,21 @@ def main():
             # AUM Visualization
             st.subheader("Assets Under Management")
             
-            # Create pie chart for AUM distribution
-            fig = create_pie_chart(
-                eth_etf_df,
+            # Create pie chart for AUM distribution with improved formatting
+            # Filter out any non-numeric or zero values
+            filtered_eth_etfs = eth_etf_df.copy()
+            filtered_eth_etfs['aum_usd'] = pd.to_numeric(filtered_eth_etfs['aum_usd'], errors='coerce')
+            filtered_eth_etfs = filtered_eth_etfs.dropna(subset=['aum_usd'])
+            filtered_eth_etfs = filtered_eth_etfs[filtered_eth_etfs['aum_usd'] > 0]
+            
+            # Create the enhanced pie chart
+            fig = create_enhanced_pie_chart(
+                filtered_eth_etfs,
                 'aum_usd',
                 'ticker',
-                "Ethereum ETF AUM Distribution"
+                "Ethereum ETF AUM Distribution",
+                show_top_n=10,  # Show top 10 ETFs
+                min_percent=1.0  # Only group ETFs with less than 1% share
             )
             
             display_chart(fig)
@@ -594,10 +612,6 @@ def main():
     
     # Grayscale Funds and Hong Kong ETFs tabs removed as requested
     
-    # Add footer
-    st.markdown("---")
-    st.caption("Izun Crypto Liquidity Report © 2025")
-    st.caption("Data provided by CoinGlass API")
 
 if __name__ == "__main__":
     main()

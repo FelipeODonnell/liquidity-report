@@ -324,10 +324,6 @@ def main():
     with tab2:
         render_settings()
     
-    # Add footer
-    st.markdown("---")
-    st.caption("Izun Crypto Liquidity Report © 2025")
-    st.caption("Data provided by CoinGlass API")
 
 if __name__ == "__main__":
     main()

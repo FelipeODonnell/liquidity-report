@@ -508,16 +508,35 @@ def main():
         st.title(f"{APP_ICON} Crypto Liquidity Report")
         st.write("Comprehensive analysis of market liquidity metrics across major crypto assets")
         
+        # Multi-select assets
+        st.subheader("Select Assets to Display")
+        available_assets = ['BTC', 'ETH', 'SOL', 'XRP']  # Default assets for report page
+        
+        # Initialize with previously selected assets if available, otherwise default to BTC, ETH
+        default_selection = st.session_state.get('selected_assets', ['BTC', 'ETH'])
+        
+        # Add dropdown for asset selection - improved from multiselect for better UI
+        selected_asset = st.selectbox(
+            "Select asset to display",
+            available_assets,
+            index=available_assets.index(default_selection[0]) if default_selection and default_selection[0] in available_assets else 0
+        )
+        
+        # Use a single asset in a list for compatibility with existing code
+        selected_assets = [selected_asset]
+        
+        # Store selected assets in session state
+        st.session_state.selected_assets = selected_assets
+        
+        # For backward compatibility with code that expects a single selected asset
+        # Use the first selected asset as the primary one
+        st.session_state.selected_asset = selected_assets[0]
+        
         # Display loading message
         with st.spinner("Loading dashboard data..."):
             data = load_report_data()
         
-        # Get the last updated time
-        last_updated = get_data_last_updated()
-        last_updated_str = format_timestamp(last_updated) if last_updated else "Unknown"
-        
-        # Show data date info
-        st.caption(f"Data as of: {last_updated_str}")
+        # Removed data last updated reference
         
         # Check if data is available
         if not data:
@@ -774,9 +793,9 @@ def main():
                 help="Choose how to visualize the volume comparison"
             )
         
-        # Get volume data for all major assets
+        # Get volume data for selected assets
         try:
-            assets_volume = extract_asset_volume_data(data, ['BTC', 'ETH', 'SOL', 'XRP'])
+            assets_volume = extract_asset_volume_data(data, selected_assets)
             
             # Log success or issues with data
             if assets_volume:
@@ -1032,8 +1051,8 @@ def main():
         # OI Comparison across assets
         st.subheader("Open Interest Comparison Across Assets")
         
-        # Get OI data for all major assets
-        assets_oi = extract_asset_oi_data(data, ['BTC', 'ETH', 'SOL', 'XRP'])
+        # Get OI data for selected assets
+        assets_oi = extract_asset_oi_data(data, selected_assets)
         
         if assets_oi:
             # Create comparison bar chart
@@ -1477,8 +1496,16 @@ def main():
                         rate_col = 'close' if 'close' in filtered_funding_df.columns else 'rate' if 'rate' in filtered_funding_df.columns else 'funding_rate'
                         
                         # Ensure both dataframes have datetime as index
-                        funding_df_resampled = filtered_funding_df.set_index('datetime').resample('1D').mean()
-                        price_df_resampled = price_history_df.set_index('datetime').resample('1D').mean()
+                        # First explicitly convert any numeric columns to ensure they're not objects
+                        numeric_df = filtered_funding_df.copy()
+                        # Ensure the column is numeric before resampling
+                        numeric_df[rate_col] = pd.to_numeric(numeric_df[rate_col], errors='coerce')
+                        funding_df_resampled = numeric_df.set_index('datetime').resample('1D').mean()
+                        
+                        # Do the same for price data
+                        price_numeric_df = price_history_df.copy()
+                        price_numeric_df['close'] = pd.to_numeric(price_numeric_df['close'], errors='coerce')
+                        price_df_resampled = price_numeric_df.set_index('datetime').resample('1D').mean()
                         
                         # Merge on index
                         merged_df = pd.merge(
@@ -1688,9 +1715,9 @@ def main():
                 # Add cross-asset funding rate comparison if we have data for multiple assets
                 st.subheader("Cross-Asset Funding Rate Comparison")
                 try:
-                    # Try to load funding rate data for other assets
+                    # Try to load funding rate data for selected assets
                     asset_funding_data = {}
-                    for compare_asset in ['BTC', 'ETH', 'SOL', 'XRP']:
+                    for compare_asset in selected_assets:
                         if compare_asset == asset:
                             # Already have this asset's data
                             avg_rate = filtered_df['funding_rate_pct'].mean()
@@ -1991,8 +2018,19 @@ def main():
         
         # OI to Price ratio
         if latest_price is not None and open_interest_total is not None:
-            oi_price_ratio = open_interest_total / (latest_price * 1000)  # Scale for better readability
-            insights.append(f"**OI/Price Ratio:** The ratio of open interest to price is {oi_price_ratio:.2f}.")
+            # Convert both values to float to ensure safe division
+            try:
+                # Convert to float and handle possible non-numeric values
+                oi_float = float(open_interest_total)
+                price_float = float(latest_price)
+                
+                # Perform the division with error handling
+                if price_float > 0:
+                    oi_price_ratio = oi_float / (price_float * 1000)  # Scale for better readability
+                    insights.append(f"**OI/Price Ratio:** The ratio of open interest to price is {oi_price_ratio:.2f}.")
+            except (ValueError, TypeError):
+                logger.warning(f"Unable to calculate OI/Price ratio for {asset} due to non-numeric values")
+                # Skip adding this insight if calculation fails
         
         # Funding rate insights
         if current_rate is not None:
@@ -2016,10 +2054,6 @@ def main():
         else:
             st.info("Insufficient data available to generate market insights.")
         
-        # Add footer
-        st.markdown("---")
-        st.caption("Izun Crypto Liquidity Report © 2025")
-        st.caption("Data provided by CoinGlass API")
     except Exception as e:
         st.error(f"An error occurred: {e}")
         logger.error(f"Error in main: {e}", exc_info=True)

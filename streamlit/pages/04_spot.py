@@ -8,6 +8,7 @@ import streamlit as st
 import pandas as pd
 import plotly.express as px
 import plotly.graph_objects as go
+from plotly.subplots import make_subplots
 from datetime import datetime, timedelta
 import os
 import sys
@@ -21,14 +22,17 @@ sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
 # Import components and utilities
 from components.sidebar import render_sidebar
+from utils.config import DATA_BASE_PATH
 from components.metrics import display_metrics_row, display_metric_card
 from components.charts import (
     create_time_series, 
     create_bar_chart, 
     create_time_series_with_bar,
     create_pie_chart,
+    create_ohlc_chart,
     apply_chart_theme,
-    display_chart
+    display_chart,
+    display_filterable_chart
 )
 from components.tables import create_formatted_table, create_exchange_table
 from utils.data_loader import (
@@ -59,9 +63,42 @@ st.set_page_config(
 # Set the current page for sidebar navigation
 st.session_state.current_page = 'spot'
 
+# Configure more detailed logging
+logger.setLevel(logging.INFO)
+fh = logging.FileHandler('spot_page.log')
+fh.setLevel(logging.INFO)
+logger.addHandler(fh)
+
 # Initialize subcategory session state if not exists
 if 'spot_subcategory' not in st.session_state:
-    st.session_state.spot_subcategory = 'market_data'
+    st.session_state.spot_subcategory = 'market_data'  # Backend name stays as 'market_data' for compatibility
+
+def calculate_weighted_average(df, value_col, weight_col):
+    """
+    Calculate weighted average of a column based on a weight column.
+    
+    Parameters:
+    -----------
+    df : pandas.DataFrame
+        DataFrame containing data
+    value_col : str
+        Column containing values to average
+    weight_col : str
+        Column containing weights
+        
+    Returns:
+    --------
+    float
+        Weighted average
+    """
+    # Filter to only valid rows (non-NaN and positive weights)
+    valid_df = df[df[weight_col] > 0].dropna(subset=[value_col, weight_col])
+    
+    if valid_df.empty:
+        return df[value_col].mean()  # Use simple average if no valid weights
+    
+    # Calculate weighted average
+    return (valid_df[value_col] * valid_df[weight_col]).sum() / valid_df[weight_col].sum()
 
 def load_spot_data(subcategory, asset):
     """
@@ -79,38 +116,255 @@ def load_spot_data(subcategory, asset):
     dict
         Dictionary containing spot data
     """
+    logger.info(f"Loading spot data for subcategory={subcategory}, asset={asset}")
     data = {}
     
     # Get the latest data directory
     latest_dir = get_latest_data_directory()
+    logger.info(f"Latest data directory: {latest_dir}")
     
     if not latest_dir:
-        st.error("No data directories found. Please check your data path.")
+        logger.error("No data directories found.")
+        logger.error("No data directories found. Please check your data path.")
         return data
     
     # Load specified subcategory data
-    if subcategory == 'market_data':
-        data = load_data_for_category('spot', 'spot_market', asset)
-    elif subcategory == 'order_book':
-        data = load_data_for_category('spot', 'order_book_spot', asset)
-    elif subcategory == 'taker_buy_sell':
-        data = load_data_for_category('spot', 'taker_buy_sell_spot', asset)
-    else:
-        st.error(f"Unknown subcategory: {subcategory}")
+    try:
+        if subcategory == 'market_data':
+            logger.info(f"Loading spot market data for {asset}")
+            data = load_data_for_category('spot', 'spot_market', asset)
+        elif subcategory == 'order_book':
+            logger.info(f"Loading order book spot data for {asset}")
+            data = load_data_for_category('spot', 'order_book_spot', asset)
+        elif subcategory == 'taker_buy_sell':
+            logger.info(f"Loading taker buy/sell spot data for {asset}")
+            data = load_data_for_category('spot', 'taker_buy_sell_spot', asset)
+        else:
+            logger.error(f"Unknown subcategory: {subcategory}")
+            logger.error(f"Unknown subcategory: {subcategory}")
+        
+        logger.info(f"Data loaded for {subcategory}, found {len(data)} data objects")
+    except Exception as e:
+        logger.error(f"Error loading data for {subcategory}/{asset}: {e}", exc_info=True)
+        logger.error(f"Error loading data: {str(e)}")
     
     return data
 
-def render_market_data_page(asset):
-    """Render the market data page for the specified asset."""
-    st.header(f"{asset} Spot Market Data")
-    logger.info(f"Rendering market data page for {asset}")
+def create_multi_asset_candlestick(assets, market_prices=None):
+    """
+    Create a candlestick chart showing price data for multiple assets.
+    
+    Parameters:
+    -----------
+    assets: list
+        List of assets to include in the chart
+    market_prices: dict, optional
+        Dictionary with current market prices for calculation of price differences
+        
+    Returns:
+    --------
+    plotly.graph_objects.Figure
+        Candlestick chart with multiple assets
+    """
+    logger.info(f"Creating multi-asset candlestick chart for: {assets}")
+    
+    # Get the latest data directory
+    latest_dir = get_latest_data_directory()
+    price_history_path = os.path.join(DATA_BASE_PATH, latest_dir, 'futures', 'market', 'api_price_ohlc_history.parquet')
+    
+    if not os.path.exists(price_history_path):
+        logger.error(f"Price history file not found at: {price_history_path}")
+        return None
+    
+    try:
+        # Load price data
+        price_df = pd.read_parquet(price_history_path)
+        logger.info(f"Loaded price data with shape: {price_df.shape}, columns: {price_df.columns.tolist()}")
+        
+        # Convert timestamp to datetime
+        if 'time' in price_df.columns:
+            # Determine unit based on magnitude
+            max_time = price_df['time'].max()
+            if max_time > 1e12:
+                price_df['datetime'] = pd.to_datetime(price_df['time'], unit='ms')
+            else:
+                price_df['datetime'] = pd.to_datetime(price_df['time'], unit='s')
+        
+        # Convert string columns to numeric
+        for col in ['open', 'high', 'low', 'close', 'volume_usd']:
+            if col in price_df.columns and price_df[col].dtype == 'object':
+                price_df[col] = pd.to_numeric(price_df[col], errors='coerce')
+        
+        # Create figure with subplots - one row per asset
+        num_assets = len(assets)
+        fig = make_subplots(rows=num_assets, cols=1, 
+                            shared_xaxes=True, 
+                            vertical_spacing=0.05,
+                            subplot_titles=[f"{a} Price" for a in assets])
+        
+        # Add a candlestick trace for each asset
+        for i, asset_name in enumerate(assets):
+            # Same price data used for all assets since we don't have asset-specific data in this file
+            # In a real application, you'd filter by asset
+            asset_price = price_df.copy()
+            
+            # Sort by datetime and take only recent data (last 14 days)
+            asset_price = asset_price.sort_values('datetime')
+            two_weeks_ago = pd.Timestamp.now() - pd.Timedelta(days=14)
+            asset_price = asset_price[asset_price['datetime'] > two_weeks_ago]
+            
+            # Drop rows with NaN values
+            asset_price = asset_price.dropna(subset=['open', 'high', 'low', 'close', 'datetime'])
+            
+            if not asset_price.empty:
+                # Calculate price difference if market prices are provided
+                price_annotation = ""
+                if market_prices and asset_name in market_prices and market_prices[asset_name]:
+                    current_market_price = market_prices[asset_name]
+                    latest_close = asset_price['close'].iloc[-1]
+                    price_diff = current_market_price - latest_close
+                    price_diff_pct = (price_diff / latest_close) * 100 if latest_close != 0 else 0
+                    
+                    # Update subplot title to include price difference
+                    diff_text = f" ({'+' if price_diff >= 0 else ''}{price_diff:.2f}, {'+' if price_diff_pct >= 0 else ''}{price_diff_pct:.2f}%)"
+                    price_annotation = diff_text
+                    fig.layout.annotations[i].text = f"{asset_name} Price{price_annotation}"
+                
+                # Add candlestick trace
+                fig.add_trace(
+                    go.Candlestick(
+                        x=asset_price['datetime'],
+                        open=asset_price['open'], 
+                        high=asset_price['high'],
+                        low=asset_price['low'], 
+                        close=asset_price['close'],
+                        name=asset_name,
+                        showlegend=False
+                    ),
+                    row=i+1, col=1
+                )
+                
+                # Add volume as a bar chart at the bottom of each price chart
+                fig.add_trace(
+                    go.Bar(
+                        x=asset_price['datetime'],
+                        y=asset_price['volume_usd'],
+                        name='Volume',
+                        marker_color='rgba(128,128,128,0.5)',
+                        showlegend=False,
+                        opacity=0.7,
+                        yaxis="y2"
+                    ),
+                    row=i+1, col=1
+                )
+                
+                # Customize y-axes for this subplot
+                fig.update_yaxes(title_text="Price (USD)", row=i+1, col=1)
+                
+                # If market price is available, add a horizontal line for current market price
+                if market_prices and asset_name in market_prices and market_prices[asset_name]:
+                    fig.add_hline(
+                        y=market_prices[asset_name],
+                        line_dash="dash",
+                        line_width=2,
+                        line_color="rgba(255, 255, 0, 0.7)",
+                        annotation_text="Current",
+                        annotation_position="bottom right",
+                        row=i+1, col=1
+                    )
+        
+        # Update layout
+        fig.update_layout(
+            title="Asset Price Comparison (OHLC)",
+            height=250 * num_assets,  # Height scales with number of assets
+            margin=dict(t=50, b=20),
+            xaxis_rangeslider_visible=False
+        )
+        
+        # Update each xaxis's rangeslider visibility
+        for i in range(num_assets):
+            fig.update_xaxes(rangeslider_visible=False, row=i+1, col=1)
+        
+        # Apply the theme
+        fig = apply_chart_theme(fig)
+        
+        return fig
+        
+    except Exception as e:
+        logger.error(f"Error creating multi-asset candlestick chart: {e}", exc_info=True)
+        # Don't show technical error to user
+        return None
+
+
+def render_market_data_page(asset, all_selected_assets=None, selected_exchanges=None, selected_time_range=None):
+    """Render the market data page for the specified asset and other selected assets.
+    
+    Parameters:
+    -----------
+    asset: str
+        Primary asset to display (for backward compatibility)
+    all_selected_assets: list
+        List of all selected assets to display
+    selected_exchanges: list
+        List of exchanges to display data for
+    selected_time_range: str
+        Selected time range for filtering data
+    """
+    # Write debug info to logs
+    logger.info(f"Starting market data page for {asset}")
+    logger.info(f"Selected exchanges: {selected_exchanges}")
+    
+    if all_selected_assets is None or len(all_selected_assets) <= 1:
+        st.header(f"{asset} Live Price Data")
+        logger.info(f"Rendering live price page for {asset}")
+    else:
+        asset_str = ", ".join(all_selected_assets)
+        st.header(f"Live Price Data: {asset_str}")
+        logger.info(f"Rendering live price page for multiple assets: {asset_str}")
+        
+    # Exchange selector
+    # Define available exchanges for spot market data
+    available_exchanges = ["Binance", "Coinbase", "Kraken", "OKX", "All"]
+    
+    # Default to session state if it exists, otherwise use All
+    default_exchanges = selected_exchanges if selected_exchanges else ["All"]
+    
+    # Add exchange selector
+    exchange_col1, exchange_col2 = st.columns([3, 1])
+    with exchange_col1:
+        selected_exchanges = st.multiselect(
+            "Select Exchanges to Display",
+            available_exchanges,
+            default=default_exchanges,
+            key=f"spot_market_exchange_selector_{asset}"
+        )
+    
+    # Ensure at least one exchange is selected
+    if not selected_exchanges:
+        selected_exchanges = ["All"]
+        logger.warning("At least one exchange must be selected. Defaulting to 'All'.")
+    
+    # Store in session state for this section
+    st.session_state.selected_spot_market_exchanges = selected_exchanges
+    
+    # For backward compatibility
+    st.session_state.selected_exchanges = selected_exchanges
 
     # Load market data
     data = load_spot_data('market_data', asset)
+    
+    # Enhanced logging for debugging
+    logger.info(f"Data loaded for {asset}: {bool(data)}")
+    if data:
+        logger.info(f"Data keys: {list(data.keys())}")
+        for key, value in data.items():
+            if isinstance(value, pd.DataFrame):
+                logger.info(f"DataFrame '{key}' shape: {value.shape}, columns: {list(value.columns)}")
+            else:
+                logger.info(f"Non-DataFrame data in key '{key}': {type(value)}")
 
     if not data:
-        st.info(f"No spot market data available for {asset}.")
-        st.write("Spot market data shows information about cryptocurrency trading pairs across various exchanges.")
+        logger.info(f"No spot market data available for {asset}.")
 
         # Show empty placeholder layout
         col1, col2 = st.columns(2)
@@ -120,10 +374,10 @@ def render_market_data_page(asset):
             st.metric("24h Volume", "$0")
 
         st.subheader("Price History")
-        st.write("No data available. Price history charts will be displayed here when data is loaded.")
+        # Empty placeholder for price history charts
 
         st.subheader("Trading Pairs")
-        st.write("No data available. Trading pair information will be displayed here when data is loaded.")
+        # Empty placeholder for trading pair information
         return
 
     # Log data keys for debugging
@@ -261,6 +515,10 @@ def render_market_data_page(asset):
 
             # Now process and display the pairs data
             st.subheader(f"{asset} Trading Pairs")
+            
+            # Filter by selected exchanges if needed (if not "All")
+            if 'exchange_name' in pairs_df.columns and selected_exchanges and "All" not in selected_exchanges:
+                pairs_df = pairs_df[pairs_df['exchange_name'].isin(selected_exchanges)]
 
             # Check if we have the necessary columns
             if 'exchange_name' in pairs_df.columns and 'price_usd' in pairs_df.columns:
@@ -311,6 +569,55 @@ def render_market_data_page(asset):
 
                     # Create and display the table
                     create_formatted_table(display_df, format_dict=format_dict)
+                    
+                    # Add Asset Price Comparison Chart section
+                    st.subheader(f"{asset} Price Comparison Chart")
+                    # Section for asset price comparison
+                    
+                    # Use SUPPORTED_ASSETS if available or a default list
+                    try:
+                        from utils.config import SUPPORTED_ASSETS
+                        available_comparison_assets = SUPPORTED_ASSETS
+                    except:
+                        available_comparison_assets = ["BTC", "ETH", "SOL", "XRP", "DOGE", "ADA"]
+                    
+                    # Let user select assets to compare
+                    selected_comparison_assets = st.multiselect(
+                        "Select assets to compare",
+                        available_comparison_assets,
+                        default=all_selected_assets if all_selected_assets and len(all_selected_assets) <= 3 else [asset],
+                        key="price_comparison_assets"
+                    )
+                    
+                    # Extract current prices from the pairs data
+                    market_prices = {}
+                    if not pairs_df.empty and 'symbol' in pairs_df.columns and 'price_usd' in pairs_df.columns:
+                        for asset_symbol in selected_comparison_assets:
+                            asset_rows = pairs_df[pairs_df['symbol'].str.contains(asset_symbol, case=False, na=False)]
+                            if not asset_rows.empty and 'price_usd' in asset_rows.columns:
+                                # Calculate volume-weighted average price
+                                if 'volume_24h_usd' in asset_rows.columns:
+                                    try:
+                                        market_prices[asset_symbol] = calculate_weighted_average(
+                                            asset_rows, 'price_usd', 'volume_24h_usd'
+                                        )
+                                    except Exception as wp_err:
+                                        logger.error(f"Error calculating weighted price: {wp_err}")
+                                        # Fallback to simple average
+                                        market_prices[asset_symbol] = asset_rows['price_usd'].mean()
+                                else:
+                                    market_prices[asset_symbol] = asset_rows['price_usd'].mean()
+                    
+                    if selected_comparison_assets:
+                        # Create and display the chart
+                        with st.spinner("Creating price comparison chart..."):
+                            comparison_chart = create_multi_asset_candlestick(selected_comparison_assets, market_prices)
+                            if comparison_chart:
+                                st.plotly_chart(comparison_chart, use_container_width=True)
+                            else:
+                                logger.info("Price comparison chart is not available at this time.")
+                    else:
+                        logger.info("No assets selected for price comparison chart.")
 
                 # Create bar chart for volume by exchange if we have the necessary data
                 if 'exchange_name' in pairs_df.columns and 'volume_24h_usd' in pairs_df.columns:
@@ -342,6 +649,11 @@ def render_market_data_page(asset):
                         )
 
                         display_chart(apply_chart_theme(fig))
+                        
+                        
+                        # Set defaults in session state for backward compatibility
+                        st.session_state.market_data_time_range = 'All'
+                        st.session_state.selected_time_range = 'All'
 
                         # Create pie chart for volume distribution
                         st.subheader(f"{asset} Volume Distribution")
@@ -354,15 +666,438 @@ def render_market_data_page(asset):
                         )
 
                         display_chart(fig)
+                        
+                        # Add Price History Chart
+                        st.subheader(f"{asset} Price History")
+                        
+                        try:
+                            # First try to load the price OHLC history data
+                            price_history_df = None
+                            
+                            # Try loading price OHLC data directly from the file
+                            try:
+                                logger.info("Attempting to load price OHLC data directly from file")
+                                price_history_path = os.path.join(DATA_BASE_PATH, get_latest_data_directory(), 'futures', 'market', 'api_price_ohlc_history.parquet')
+                                
+                                if os.path.exists(price_history_path):
+                                    logger.info(f"Loading price history from: {price_history_path}")
+                                    price_history_df = pd.read_parquet(price_history_path)
+                                    logger.info(f"Successfully loaded price history data: {len(price_history_df)} rows")
+                                    
+                                    # Log the first few rows to see what the data looks like
+                                    logger.info(f"Price history first rows: {price_history_df.head(2).to_dict()}")
+                                    
+                                    # Log the data types
+                                    logger.info(f"Price history data types: {price_history_df.dtypes}")
+                                else:
+                                    logger.warning(f"Price history file not found at: {price_history_path}")
+                                    
+                                    # Try the load_data_for_category approach as fallback
+                                    logger.info(f"Falling back to loading price history data for {asset} from futures/market")
+                                    futures_market_data = load_data_for_category('futures', 'market', asset)
+                                    
+                                    # Log available keys in futures market data
+                                    logger.info(f"Futures market data keys: {list(futures_market_data.keys() if futures_market_data else [])}")
+                                    
+                                    # Check if price data exists
+                                    if futures_market_data and 'api_price_ohlc_history' in futures_market_data and not futures_market_data['api_price_ohlc_history'].empty:
+                                        price_history_df = futures_market_data['api_price_ohlc_history'].copy()
+                                        logger.info(f"Found price history data via category loader: {len(price_history_df)} rows")
+                                    else:
+                                        logger.warning(f"No price history data found for {asset} through either method")
+                                        price_history_df = None
+                            except Exception as load_error:
+                                logger.error(f"Error loading price history data: {load_error}", exc_info=True)
+                                price_history_df = None
+                                
+                            if price_history_df is not None and not price_history_df.empty:
+                                try:
+                                    # Convert timestamp to datetime if it's in milliseconds
+                                    logger.info("Processing price data...")
+                                    logger.info("Converting timestamps and numeric columns...")
+                                    
+                                    if 'time' in price_history_df.columns:
+                                        logger.info(f"Converting time column: dtype={price_history_df['time'].dtype}, first value={price_history_df['time'].iloc[0]}")
+                                        
+                                        if price_history_df['time'].dtype == 'int64':
+                                            try:
+                                                # Check the magnitude of the timestamps to determine unit
+                                                max_time = price_history_df['time'].max()
+                                                logger.info(f"Maximum timestamp value: {max_time}")
+                                                
+                                                # Typically if > 1e12, it's milliseconds, if > 1e9 but < 1e12, it's seconds
+                                                if max_time > 1e12:
+                                                    logger.info("Timestamp appears to be in milliseconds")
+                                                    price_history_df['datetime'] = pd.to_datetime(price_history_df['time'], unit='ms')
+                                                elif max_time > 1e9:
+                                                    logger.info("Timestamp appears to be in seconds")
+                                                    price_history_df['datetime'] = pd.to_datetime(price_history_df['time'], unit='s')
+                                                else:
+                                                    # Default to milliseconds as most common
+                                                    logger.info("Using default milliseconds for timestamp")
+                                                    price_history_df['datetime'] = pd.to_datetime(price_history_df['time'], unit='ms')
+                                                    
+                                                logger.info(f"Converted time to datetime: {price_history_df['datetime'].head(2)}")
+                                            except Exception as time_err:
+                                                logger.error(f"Error converting timestamp: {time_err}")
+                                                # Try multiple approaches sequentially
+                                                for unit in ['ms', 's', 'us', 'ns']:
+                                                    try:
+                                                        price_history_df['datetime'] = pd.to_datetime(price_history_df['time'], unit=unit)
+                                                        logger.info(f"Successfully converted time using {unit} unit")
+                                                        break
+                                                    except Exception as unit_err:
+                                                        logger.warning(f"Failed {unit} conversion: {unit_err}")
+                                        else:
+                                            try:
+                                                price_history_df['datetime'] = pd.to_datetime(price_history_df['time'])
+                                                logger.info(f"Converted string time to datetime: {price_history_df['datetime'].head(2)}")
+                                            except Exception as dt_err:
+                                                logger.error(f"Could not convert 'time' to datetime: {dt_err}")
+                                                logger.warning("Could not process time data correctly")
+                                    
+                                    # Convert string columns to numeric
+                                    logger.info("Converting numeric columns")
+                                    numeric_cols = ['open', 'high', 'low', 'close', 'volume_usd']
+                                    for col in numeric_cols:
+                                        if col in price_history_df.columns:
+                                            try:
+                                                if price_history_df[col].dtype == 'object':
+                                                    logger.info(f"Converting {col} from object to numeric: sample value={price_history_df[col].iloc[0]}")
+                                                    # First remove any commas or other non-numeric characters
+                                                    if isinstance(price_history_df[col].iloc[0], str):
+                                                        price_history_df[col] = price_history_df[col].str.replace(',', '').str.strip()
+                                                    price_history_df[col] = pd.to_numeric(price_history_df[col], errors='coerce')
+                                                    nan_count = price_history_df[col].isna().sum()
+                                                    if nan_count > 0:
+                                                        logger.warning(f"NaN count after converting {col}: {nan_count} out of {len(price_history_df)}")
+                                            except Exception as num_err:
+                                                logger.error(f"Error converting {col} to numeric: {num_err}")
+                                                logger.warning(f"Error processing numeric data in {col} column")
+                                    
+                                    # Create OHLC chart
+                                    required_cols = ['open', 'high', 'low', 'close', 'datetime']
+                                    missing_cols = [col for col in required_cols if col not in price_history_df.columns]
+                                    
+                                    if missing_cols:
+                                        logger.error(f"Missing required columns for OHLC chart: {missing_cols}. Available columns: {price_history_df.columns.tolist()}")
+                                        logger.warning(f"Cannot create OHLC chart - missing required columns: {missing_cols}")
+                                    elif price_history_df.empty:
+                                        logger.error("Price history DataFrame is empty")
+                                        logger.warning("No price history data available to create chart")
+                                    else:
+                                        # Log information about the data
+                                        logger.info(f"Creating OHLC chart with {len(price_history_df)} data points")
+                                        
+                                        # Check for NaN values
+                                        for col in required_cols:
+                                            nan_count = price_history_df[col].isna().sum()
+                                            if nan_count > 0:
+                                                logger.warning(f"Column {col} has {nan_count} NaN values out of {len(price_history_df)} rows")
+                                        
+                                        try:
+                                            # Create OHLC chart with additional safety checks
+                                            try:
+                                                # Sort by datetime to ensure proper display
+                                                price_history_df = price_history_df.sort_values('datetime')
+                                                
+                                                # Filter out NaN values
+                                                price_history_df = price_history_df.dropna(subset=['open', 'high', 'low', 'close', 'datetime'])
+                                                
+                                                # Ensure data is numeric
+                                                for col in ['open', 'high', 'low', 'close']:
+                                                    if price_history_df[col].dtype == 'object':
+                                                        price_history_df[col] = pd.to_numeric(price_history_df[col], errors='coerce')
+                                                
+                                                # Drop any rows with NaN after conversion
+                                                price_history_df = price_history_df.dropna(subset=['open', 'high', 'low', 'close'])
+                                                
+                                                # Log the first few rows after cleanup
+                                                logger.info(f"Data for charting after cleanup: {len(price_history_df)} rows remaining")
+                                                
+                                                if not price_history_df.empty:
+                                                    # Verify data is valid for charting
+                                                    logger.info(f"Sample data for charting: Open={price_history_df['open'].iloc[0]}, High={price_history_df['high'].iloc[0]}, Low={price_history_df['low'].iloc[0]}, Close={price_history_df['close'].iloc[0]}")
+                                                    
+                                                    fig = create_ohlc_chart(
+                                                        price_history_df,
+                                                        'datetime',
+                                                        'open', 'high', 'low', 'close',
+                                                        f"{asset} Price (OHLC)",
+                                                        height=500
+                                                    )
+                                                else:
+                                                    logger.error("No valid data points after filtering NaNs")
+                                                    fig = go.Figure()
+                                                    fig.add_annotation(
+                                                        text="Price history data will appear here when available",
+                                                        xref="paper", yref="paper",
+                                                        x=0.5, y=0.5, showarrow=False,
+                                                        font=dict(size=16, color="gray")
+                                                    )
+                                            except Exception as chart_create_err:
+                                                logger.error(f"Error during chart creation: {chart_create_err}")
+                                                fig = go.Figure()
+                                                fig.add_annotation(
+                                                    text="Unable to display price chart at this time",
+                                                    xref="paper", yref="paper",
+                                                    x=0.5, y=0.5, showarrow=False,
+                                                    font=dict(size=16, color="gray")
+                                                )
+                                            logger.info("Successfully created OHLC chart, now displaying")
+                                            display_chart(apply_chart_theme(fig))
+                                            logger.info("OHLC chart displayed successfully")
+                                        except Exception as chart_error:
+                                            logger.error(f"Error creating/displaying OHLC chart: {chart_error}", exc_info=True)
+                                        
+                                        # Create volume chart
+                                        if 'volume_usd' in price_history_df.columns:
+                                            st.subheader(f"{asset} Trading Volume History")
+                                            logger.info("Attempting to create volume chart")
+                                            
+                                            # Check required columns
+                                            vol_required_cols = ['datetime', 'close', 'volume_usd']
+                                            vol_missing_cols = [col for col in vol_required_cols if col not in price_history_df.columns]
+                                            
+                                            if vol_missing_cols:
+                                                logger.error(f"Missing required columns for volume chart: {vol_missing_cols}")
+                                                logger.warning(f"Cannot create volume chart - missing columns: {vol_missing_cols}")
+                                            else:
+                                                try:
+                                                    # Check NaN values
+                                                    for col in vol_required_cols:
+                                                        nan_count = price_history_df[col].isna().sum()
+                                                        if nan_count > 0:
+                                                            logger.warning(f"Volume chart: Column {col} has {nan_count} NaN values")
+                                                    
+                                                    # Create the chart with safety checks
+                                                    try:
+                                                        # Sort by datetime to ensure proper display
+                                                        price_history_df = price_history_df.sort_values('datetime')
+                                                        
+                                                        # Filter out NaN values
+                                                        price_history_df = price_history_df.dropna(subset=['close', 'volume_usd', 'datetime'])
+                                                        
+                                                        # Ensure data is numeric
+                                                        for col in ['close', 'volume_usd']:
+                                                            if price_history_df[col].dtype == 'object':
+                                                                price_history_df[col] = pd.to_numeric(price_history_df[col], errors='coerce')
+                                                        
+                                                        # Drop any rows with NaN after conversion
+                                                        price_history_df = price_history_df.dropna(subset=['close', 'volume_usd'])
+                                                        
+                                                        # Log status after cleanup
+                                                        logger.info(f"Volume chart data after cleanup: {len(price_history_df)} rows remaining")
+                                                        
+                                                        if not price_history_df.empty:
+                                                            # Verify data is valid for charting
+                                                            logger.info(f"Sample data for volume chart: Close={price_history_df['close'].iloc[0]}, Volume={price_history_df['volume_usd'].iloc[0]}")
+                                                            
+                                                            fig = create_time_series_with_bar(
+                                                                price_history_df, 
+                                                                'datetime', 
+                                                                'close', 
+                                                                'volume_usd',
+                                                                f"{asset} Price vs Volume",
+                                                                height=500
+                                                            )
+                                                        else:
+                                                            logger.error("No valid data points for volume chart after filtering NaNs")
+                                                            logger.info("Volume history data is not available for this time period.")
+                                                            fig = go.Figure()
+                                                            fig.add_annotation(
+                                                                text="Volume history data will appear here when available",
+                                                                xref="paper", yref="paper",
+                                                                x=0.5, y=0.5, showarrow=False,
+                                                                font=dict(size=16, color="gray")
+                                                            )
+                                                    except Exception as vol_chart_err:
+                                                        logger.error(f"Error during volume chart creation: {vol_chart_err}")
+                                                        fig = go.Figure()
+                                                        fig.add_annotation(
+                                                            text="Unable to display volume chart at this time",
+                                                            xref="paper", yref="paper",
+                                                            x=0.5, y=0.5, showarrow=False,
+                                                            font=dict(size=16, color="gray")
+                                                        )
+                                                    logger.info("Successfully created volume chart")
+                                                    display_chart(apply_chart_theme(fig))
+                                                    logger.info("Volume chart displayed successfully")
+                                                except Exception as vol_error:
+                                                    logger.error(f"Error creating/displaying volume chart: {vol_error}", exc_info=True)
+                                except Exception as e:
+                                    logger.error(f"Error creating price history charts: {e}", exc_info=True)
+                        except Exception as e:
+                            logger.error(f"Error loading price history data: {e}", exc_info=True)
+                        
+                        # Buy vs Sell Volume Analysis
+                        try:
+                            st.subheader(f"{asset} Buy vs Sell Volume")
+                            
+                            # Check if we have buy/sell volume data in pairs_df
+                            logger.info("Checking for buy/sell volume data")
+                            if pairs_df is not None and not pairs_df.empty:
+                                # Log available columns
+                                logger.info(f"Pairs DF columns: {pairs_df.columns.tolist()}")
+                                
+                                required_cols = ['buy_volume_usd_24h', 'sell_volume_usd_24h', 'exchange_name']
+                                
+                                if all(col in pairs_df.columns for col in required_cols):
+                                    # Aggregate buy/sell volumes by exchange
+                                    buy_sell_df = pairs_df.groupby('exchange_name').agg({
+                                        'buy_volume_usd_24h': 'sum',
+                                        'sell_volume_usd_24h': 'sum'
+                                    }).reset_index()
+                                    
+                                    # Calculate total and net flow
+                                    buy_sell_df['total_volume'] = buy_sell_df['buy_volume_usd_24h'] + buy_sell_df['sell_volume_usd_24h']
+                                    buy_sell_df['net_flow'] = buy_sell_df['buy_volume_usd_24h'] - buy_sell_df['sell_volume_usd_24h']
+                                    
+                                    # Sort by total volume
+                                    buy_sell_df = buy_sell_df.sort_values('total_volume', ascending=False).head(10)
+                                    
+                                    # Create stacked bar chart for buy/sell volumes
+                                    fig = go.Figure()
+                                    
+                                    fig.add_trace(go.Bar(
+                                        x=buy_sell_df['exchange_name'],
+                                        y=buy_sell_df['buy_volume_usd_24h'],
+                                        name='Buy Volume',
+                                        marker_color='green'
+                                    ))
+                                    
+                                    fig.add_trace(go.Bar(
+                                        x=buy_sell_df['exchange_name'],
+                                        y=buy_sell_df['sell_volume_usd_24h'],
+                                        name='Sell Volume',
+                                        marker_color='red'
+                                    ))
+                                    
+                                    fig.update_layout(
+                                        title=f"{asset} 24h Buy vs Sell Volume by Exchange",
+                                        xaxis_title=None,
+                                        yaxis_title="Volume (USD)",
+                                        barmode='stack',
+                                        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1)
+                                    )
+                                    
+                                    # Format y-axis to use currency format
+                                    fig.update_yaxes(tickprefix="$", tickformat=",.0f")
+                                    
+                                    display_chart(apply_chart_theme(fig))
+                                    
+                                    # Create net flow chart
+                                    fig = go.Figure()
+                                    
+                                    colors = ['green' if x >= 0 else 'red' for x in buy_sell_df['net_flow']]
+                                    
+                                    fig.add_trace(go.Bar(
+                                        x=buy_sell_df['exchange_name'],
+                                        y=buy_sell_df['net_flow'],
+                                        marker_color=colors,
+                                        name='Net Flow'
+                                    ))
+                                    
+                                    fig.update_layout(
+                                        title=f"{asset} 24h Net Flow by Exchange (Buy - Sell)",
+                                        xaxis_title=None,
+                                        yaxis_title="Net Flow (USD)"
+                                    )
+                                    
+                                    # Format y-axis to use currency format
+                                    fig.update_yaxes(tickprefix="$", tickformat=",.0f")
+                                    
+                                    # Add zero line
+                                    fig.add_hline(y=0, line_dash="dash", line_color="gray")
+                                    
+                                    display_chart(apply_chart_theme(fig))
+                                    
+                                    # Add time period comparison if we have the data
+                                    logger.info("Checking for time period comparison data")
+                                    time_periods = {
+                                        '1h': {'price': 'price_change_percent_1h', 'volume': 'volume_usd_1h'},
+                                        '4h': {'price': 'price_change_percent_4h', 'volume': 'volume_usd_4h'},
+                                        '12h': {'price': 'price_change_percent_12h', 'volume': 'volume_usd_12h'},
+                                        '24h': {'price': 'price_change_percent_24h', 'volume': 'volume_usd_24h'},
+                                        '1w': {'price': 'price_change_percent_1w', 'volume': 'volume_usd_1w'}
+                                    }
+                                    
+                                    valid_periods = []
+                                    for period, cols in time_periods.items():
+                                        if all(col in pairs_df.columns for col in cols.values()):
+                                            valid_periods.append(period)
+                                    
+                                    if valid_periods:
+                                        st.subheader(f"{asset} Price Change & Volume by Time Period")
+                                        
+                                        # Create comparison dataframe
+                                        comparison_data = []
+                                        
+                                        for period in valid_periods:
+                                            price_col = time_periods[period]['price']
+                                            volume_col = time_periods[period]['volume']
+                                            
+                                            # Calculate volume-weighted average price change
+                                            avg_price_change = calculate_weighted_average(pairs_df, price_col, volume_col)
+                                            total_volume = pairs_df[volume_col].sum()
+                                            
+                                            comparison_data.append({
+                                                'Period': period,
+                                                'Price Change %': avg_price_change,
+                                                'Volume (USD)': total_volume
+                                            })
+                                        
+                                        comparison_df = pd.DataFrame(comparison_data)
+                                        
+                                        # Create dual-axis chart
+                                        fig = make_subplots(specs=[[{"secondary_y": True}]])
+                                        
+                                        # Add price change line
+                                        fig.add_trace(
+                                            go.Scatter(
+                                                x=comparison_df['Period'],
+                                                y=comparison_df['Price Change %'],
+                                                name="Price Change %",
+                                                line=dict(color=ASSET_COLORS.get(asset, '#3366CC'), width=3)
+                                            ),
+                                            secondary_y=False,
+                                        )
+                                        
+                                        # Add volume bars
+                                        fig.add_trace(
+                                            go.Bar(
+                                                x=comparison_df['Period'],
+                                                y=comparison_df['Volume (USD)'],
+                                                name="Volume",
+                                                marker_color="rgba(180, 180, 180, 0.7)"
+                                            ),
+                                            secondary_y=True,
+                                        )
+                                        
+                                        # Set axes titles
+                                        fig.update_layout(
+                                            title=f"{asset} Price Change & Volume Comparison",
+                                            legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1)
+                                        )
+                                        
+                                        fig.update_yaxes(title_text="Price Change %", secondary_y=False, ticksuffix="%")
+                                        fig.update_yaxes(title_text="Volume (USD)", secondary_y=True, tickprefix="$", tickformat=",.0f")
+                                        
+                                        # Add reference line at zero for price change
+                                        fig.add_hline(y=0, line_dash="dash", line_color="gray", secondary_y=False)
+                                        
+                                        display_chart(apply_chart_theme(fig))
+                                else:
+                                    logger.warning("Required columns for buy/sell analysis not found in pairs_df")
+                                    logger.info("Buy/sell volume data not available. The data is missing required columns.")
+                        except Exception as e:
+                            logger.error(f"Error in buy/sell volume analysis: {e}", exc_info=True)
             else:
-                st.warning(f"Trading pairs data is missing required columns. Current columns: {list(pairs_df.columns)}")
-                st.dataframe(pairs_df.head())  # Show raw data for debugging
+                logger.info("Trading pairs data is not in the expected format. Some features may be unavailable.")
         except Exception as e:
-            st.error(f"Error processing trading pairs data: {e}")
             logger.error(f"Error in market data processing: {e}", exc_info=True)
-            st.info("Unable to display market data due to data format issues.")
     else:
-        st.info(f"No trading pairs data available for {asset}.")
+        logger.info(f"No trading pairs data available for {asset}.")
 
     # Supported coins data
     if 'api_spot_supported_coins' in data:
@@ -374,7 +1109,7 @@ def render_market_data_page(asset):
 
                 # Check for required columns
                 if 'coin_symbol' not in coins_df.columns or 'market_count' not in coins_df.columns:
-                    st.warning("Supported coins data is missing required columns.")
+                    logger.warning("Supported coins data is missing required columns.")
                     st.dataframe(coins_df)  # Show raw data as fallback
                 else:
                     # Sort by market count
@@ -409,421 +1144,603 @@ def render_market_data_page(asset):
 
                     display_chart(apply_chart_theme(fig))
             except Exception as e:
-                st.error(f"Error processing supported coins data: {e}")
-                st.info("Unable to display supported coins data due to data format issues.")
+                logger.error(f"Error processing supported coins data: {e}", exc_info=True)
         else:
-            st.info("No supported coins data available.")
+            logger.info("No supported coins data available.")
 
-def render_order_book_page(asset):
-    """Render the order book page for the specified asset."""
-    st.header(f"{asset} Spot Order Book Analysis")
-
+def render_order_book_page(asset, all_selected_assets=None, selected_exchanges=None, selected_time_range=None):
+    """Render the order book page for the specified asset and other selected assets.
+    
+    Parameters:
+    -----------
+    asset: str
+        Primary asset to display (for backward compatibility)
+    all_selected_assets: list
+        List of all selected assets to display
+    selected_exchanges: list
+        List of exchanges to display data for
+    selected_time_range: str
+        Selected time range for filtering data
+    """
+    if all_selected_assets is None or len(all_selected_assets) <= 1:
+        st.header(f"{asset} Spot Order Book Analysis")
+    else:
+        asset_str = ", ".join(all_selected_assets)
+        st.header(f"Spot Order Book Analysis: {asset_str}")
+        
+    # Exchange selector
+    # Define available exchanges for spot order book
+    available_exchanges = ["Binance", "Coinbase", "Kraken", "OKX", "All"]
+    
+    # Default to session state if it exists, otherwise use All
+    default_exchanges = selected_exchanges if selected_exchanges else ["All"]
+    
+    # Add exchange selector
+    exchange_col1, exchange_col2 = st.columns([3, 1])
+    with exchange_col1:
+        selected_exchanges = st.multiselect(
+            "Select Exchanges to Display",
+            available_exchanges,
+            default=default_exchanges,
+            key=f"spot_orderbook_exchange_selector_{asset}"
+        )
+    
+    # Ensure at least one exchange is selected
+    if not selected_exchanges:
+        selected_exchanges = ["All"]
+        logger.warning("At least one exchange must be selected. Defaulting to 'All'.")
+    
+    # Store in session state for this section
+    st.session_state.selected_spot_orderbook_exchanges = selected_exchanges
+    
+    # For backward compatibility
+    st.session_state.selected_exchanges = selected_exchanges
+    
     # Load order book data
     data = load_spot_data('order_book', asset)
-
+    
     if not data:
-        st.info(f"No spot order book data available for {asset}.")
-        st.write("Order book data shows the balance between buy and sell orders in the spot market.")
-
+        logger.info(f"No spot order book data available for {asset}.")
+        
         # Show empty placeholder layout
         col1, col2, col3 = st.columns(3)
         with col1:
-            st.metric("Asks Amount", "$0", "0%")
+            st.metric("Asks Amount", "$0")
         with col2:
-            st.metric("Bids Amount", "$0", "0%")
+            st.metric("Bids Amount", "$0")
         with col3:
             st.metric("Asks/Bids Ratio", "0.00")
-
-        st.subheader("Order Book History")
-        st.write("No data available. Order book charts will be displayed here when data is loaded.")
+            
+        st.subheader(f"{asset} Order Book History")
+        # Empty placeholder for order book history charts
         return
-
-    # Try different possible key formats for asset-specific data
-    possible_asset_keys = [
-        f"api_spot_orderbook_ask_bids_history_{asset}_{asset}",  # Double asset format
-        f"api_spot_orderbook_ask_bids_history_{asset}",          # Single asset format
+    
+    # Get order book history from Coinglass API data
+    possible_keys = [
+        f"api_spot_orderbook_aggregated_ask_bids_history_{asset}_{asset}",
+        f"api_spot_orderbook_aggregated_ask_bids_history_{asset}",
+        "api_spot_orderbook_aggregated_ask_bids_history"
     ]
-
-    # Try different possible key formats for aggregated data
-    possible_agg_keys = [
-        "api_spot_orderbook_aggregated_ask_bids_history",
-        "api_spot_orderbook_ask_bids_history",
-    ]
-
-    # First try asset-specific data keys
-    ob_df = None
-    ob_title = ""
-
-    # Try asset-specific keys first
-    for key in possible_asset_keys:
+    
+    history_df = None
+    for key in possible_keys:
         if key in data and not data[key].empty:
-            ob_df = data[key]
-            ob_title = f"{asset} Spot Order Book"
-            logger.info(f"Found order book data using key: {key}")
+            history_df = data[key].copy()
+            logger.info(f"Found order book history data using key: {key}")
             break
-
-    # If asset-specific keys didn't work, try aggregated keys
-    if ob_df is None or ob_df.empty:
-        for key in possible_agg_keys:
-            if key in data and not data[key].empty:
-                ob_df = data[key]
-                ob_title = "Spot Order Book (Aggregated)"
-                logger.info(f"Using aggregated order book data with key: {key}")
-
-                # If it's aggregated and has symbol column, filter for the asset
-                if 'symbol' in ob_df.columns:
-                    ob_df = ob_df[ob_df['symbol'].str.contains(asset, case=False, na=False)]
-                break
-
-    if ob_df is not None and not ob_df.empty:
+    
+    # Check for individual exchange data
+    exchange_key = f"api_spot_orderbook_ask_bids_history_{asset}"
+    exchange_df = None
+    if exchange_key in data and not data[exchange_key].empty:
+        exchange_df = data[exchange_key].copy()
+        logger.info(f"Found exchange-specific order book data using key: {exchange_key}")
+    
+    # Process aggregated order book data if available
+    if history_df is not None and not history_df.empty:
         try:
-            # Process dataframe for timestamps
-            ob_df = process_timestamps(ob_df, timestamp_col='time')
-
-            # Map column names to expected values if needed
-            column_mapping = {}
-
-            # Map asks/bids columns if they have different names
-            if 'asks_usd' in ob_df.columns and 'asks_amount' not in ob_df.columns:
-                column_mapping['asks_usd'] = 'asks_amount'
-
-            if 'bids_usd' in ob_df.columns and 'bids_amount' not in ob_df.columns:
-                column_mapping['bids_usd'] = 'bids_amount'
-
-            # Apply column renaming if needed
-            if column_mapping:
-                ob_df = ob_df.rename(columns=column_mapping)
-
-            # Calculate asks/bids ratio if it doesn't exist
-            if 'asks_bids_ratio' not in ob_df.columns:
-                ob_df['asks_bids_ratio'] = ob_df['asks_amount'] / ob_df['bids_amount'].replace(0, float('nan'))
-
-            # Calculate metrics from most recent data point
-            recent_ob = ob_df.iloc[-1] if len(ob_df) > 0 else None
-
-            if recent_ob is not None:
-                asks_amount = recent_ob['asks_amount']
-                bids_amount = recent_ob['bids_amount']
-                ratio = recent_ob['asks_bids_ratio']
-
-                # Create metrics
-                metrics = {
-                    "Asks Amount": {
-                        "value": asks_amount,
-                        "delta": None
-                    },
-                    "Bids Amount": {
-                        "value": bids_amount,
-                        "delta": None
-                    },
-                    "Asks/Bids Ratio": {
-                        "value": ratio,
-                        "delta": None
-                    }
-                }
-
-                formatters = {
-                    "Asks Amount": lambda x: format_currency(x, abbreviate=True),
-                    "Bids Amount": lambda x: format_currency(x, abbreviate=True),
-                    "Asks/Bids Ratio": lambda x: f"{x:.4f}"
-                }
-
-                display_metrics_row(metrics, formatters)
-
-            # Create time series chart for asks and bids
-            st.subheader(ob_title)
-
-            fig = go.Figure()
-
-            fig.add_trace(go.Scatter(
-                x=ob_df['datetime'],
-                y=ob_df['asks_amount'],
-                name='Asks Amount',
-                line=dict(color='red')
-            ))
-
-            fig.add_trace(go.Scatter(
-                x=ob_df['datetime'],
-                y=ob_df['bids_amount'],
-                name='Bids Amount',
-                line=dict(color='green')
-            ))
-
-            # Update layout
-            fig.update_layout(
-                title=f"{ob_title} - Asks/Bids Amount",
-                xaxis_title=None,
-                yaxis_title="Amount (USD)",
-                hovermode="x unified"
-            )
-
-            display_chart(apply_chart_theme(fig))
-
-            # Create ratio chart
-            st.subheader(f"{ob_title} - Ask/Bid Ratio")
-
-            fig = px.line(
-                ob_df,
-                x='datetime',
-                y='asks_bids_ratio',
-                title=f"{ob_title} - Ask/Bid Ratio"
-            )
-
-            # Add reference line at 1 (equal asks and bids)
-            fig.add_hline(
-                y=1,
-                line_dash="dash",
-                line_color="gray",
-                annotation_text="Equal"
-            )
-
-            display_chart(apply_chart_theme(fig))
-        except Exception as e:
-            st.error(f"Error processing order book data: {e}")
-            logger.error(f"Error in order book processing: {e}", exc_info=True)
-            st.info("Unable to display order book data due to data format issues.")
-    else:
-        st.info(f"No order book data available for {asset}.")
-    
-    # Large limit orders
-    if 'api_spot_orderbook_large_limit_order' in data:
-        large_orders_df = data['api_spot_orderbook_large_limit_order']
-        
-        if not large_orders_df.empty:
-            # Filter for the selected asset
-            asset_orders = large_orders_df[large_orders_df['symbol'].str.contains(asset, case=False, na=False)]
+            # Process timestamps if needed
+            history_df = process_timestamps(history_df)
             
-            if not asset_orders.empty:
-                st.subheader(f"{asset} Large Limit Orders")
+            # Check for required columns
+            required_cols = ['asks_amount', 'bids_amount']
+            missing_cols = [col for col in required_cols if col not in history_df.columns]
+            
+            if missing_cols:
+                # Try to map alternative column names
+                column_mapping = {}
                 
-                # Sort by size
-                asset_orders = asset_orders.sort_values(by='amount_usd', ascending=False)
+                # Check for asks_usd and bids_usd
+                if 'asks_usd' in history_df.columns and 'asks_amount' not in history_df.columns:
+                    column_mapping['asks_usd'] = 'asks_amount'
                 
-                # Create table
-                create_formatted_table(
-                    asset_orders,
-                    format_dict={
-                        'price': lambda x: format_currency(x, precision=2),
-                        'amount': lambda x: f"{x:.6f}",
-                        'amount_usd': lambda x: format_currency(x, abbreviate=True)
+                if 'bids_usd' in history_df.columns and 'bids_amount' not in history_df.columns:
+                    column_mapping['bids_usd'] = 'bids_amount'
+                
+                # Apply column mapping if needed
+                if column_mapping:
+                    history_df = history_df.rename(columns=column_mapping)
+                    logger.info(f"Renamed columns using mapping: {column_mapping}")
+            
+            # Map the available columns to required ones
+            logger.info(f"Available order book columns: {history_df.columns.tolist()}")
+            
+            # Create mappings based on available columns
+            asks_col = None
+            bids_col = None
+            
+            # Try to find appropriate columns for asks and bids
+            if 'aggregated_asks_usd' in history_df.columns:
+                asks_col = 'aggregated_asks_usd'
+            elif 'asks_amount' in history_df.columns:
+                asks_col = 'asks_amount'
+            elif 'asks_usd' in history_df.columns:
+                asks_col = 'asks_usd'
+                
+            if 'aggregated_bids_usd' in history_df.columns:
+                bids_col = 'aggregated_bids_usd'
+            elif 'bids_amount' in history_df.columns:
+                bids_col = 'bids_amount'
+            elif 'bids_usd' in history_df.columns:
+                bids_col = 'bids_usd'
+            
+            # Calculate metrics if we have the required columns
+            if asks_col and bids_col:
+                logger.info(f"Using {asks_col} for asks and {bids_col} for bids")
+                
+                # Calculate asks/bids ratio
+                history_df['asks_bids_ratio'] = history_df[asks_col] / history_df[bids_col].replace(0, float('nan'))
+                
+                # Get most recent values for metrics
+                if not history_df.empty:
+                    recent_data = history_df.iloc[-1]
+                    asks_amount = recent_data[asks_col]
+                    bids_amount = recent_data[bids_col]
+                    ratio = asks_amount / bids_amount if bids_amount != 0 else float('nan')
+                    
+                    # Display metrics
+                    metrics = {
+                        "Asks Amount": {
+                            "value": asks_amount,
+                            "delta": None
+                        },
+                        "Bids Amount": {
+                            "value": bids_amount,
+                            "delta": None
+                        },
+                        "Asks/Bids Ratio": {
+                            "value": ratio,
+                            "delta": None
+                        }
                     }
+                    
+                    formatters = {
+                        "Asks Amount": lambda x: format_currency(x, abbreviate=True),
+                        "Bids Amount": lambda x: format_currency(x, abbreviate=True),
+                        "Asks/Bids Ratio": lambda x: f"{x:.4f}" if pd.notna(x) else "N/A"
+                    }
+                    
+                    display_metrics_row(metrics, formatters)
+                
+                # Create time series chart for asks and bids
+                st.subheader(f"{asset} Order Book History")
+                
+                fig = go.Figure()
+                
+                # Make sure data is sorted by datetime
+                history_df = history_df.sort_values('datetime')
+                
+                fig.add_trace(go.Scatter(
+                    x=history_df['datetime'],
+                    y=history_df[asks_col],
+                    name='Asks Amount',
+                    line=dict(color='red')
+                ))
+                
+                fig.add_trace(go.Scatter(
+                    x=history_df['datetime'],
+                    y=history_df[bids_col],
+                    name='Bids Amount',
+                    line=dict(color='green')
+                ))
+                
+                # Update layout
+                fig.update_layout(
+                    title=f"{asset} Order Book Asks/Bids Amount",
+                    xaxis_title=None,
+                    yaxis_title="Amount (USD)",
+                    hovermode="x unified"
                 )
+                
+                display_chart(apply_chart_theme(fig))
+                
+                # Create ratio chart if asks_bids_ratio exists
+                st.subheader(f"{asset} Ask/Bid Ratio")
+                
+                fig = px.line(
+                    history_df,
+                    x='datetime',
+                    y='asks_bids_ratio',
+                    title=f"{asset} Ask/Bid Ratio"
+                )
+                
+                # Add reference line at 1 (equal asks and bids)
+                fig.add_hline(
+                    y=1,
+                    line_dash="dash",
+                    line_color="gray",
+                    annotation_text="Equal"
+                )
+                
+                display_chart(apply_chart_theme(fig))
             else:
-                st.info(f"No large limit orders available for {asset}.")
-        else:
-            st.info("No large limit order data available.")
+                logger.info("Order book data is not available in the expected format for this asset.")
+        except Exception as e:
+            logger.error(f"Error in order book processing: {e}", exc_info=True)
+            logger.info("Order book data could not be processed.")
+    else:
+        logger.info(f"No order book history data available for {asset}.")
     
-    # Order book heatmap
-    if 'api_spot_orderbook_heatmap_history' in data:
-        heatmap_df = data['api_spot_orderbook_heatmap_history']
-        
-        if not heatmap_df.empty:
-            # Filter for the selected asset
-            asset_heatmap = heatmap_df[heatmap_df['symbol'].str.contains(asset, case=False, na=False)]
+    # Process exchange-specific order book data if available
+    if exchange_df is not None and not exchange_df.empty:
+        try:
+            # Process timestamps if needed
+            exchange_df = process_timestamps(exchange_df)
             
-            if not asset_heatmap.empty:
-                st.subheader(f"{asset} Order Book Heatmap")
-                st.info("Order book heatmap visualization not implemented yet.")
+            # Filter by exchange if applicable
+            if 'exchange_name' in exchange_df.columns and selected_exchanges and "All" not in selected_exchanges:
+                exchange_df = exchange_df[exchange_df['exchange_name'].isin(selected_exchanges)]
+            
+            # Group by exchange
+            if 'exchange_name' in exchange_df.columns:
+                exchanges = exchange_df['exchange_name'].unique()
+                
+                if len(exchanges) > 0:
+                    st.subheader("Order Book by Exchange")
+                    
+                    # Add exchange selector
+                    selected_exchange = st.selectbox(
+                        "Select Exchange",
+                        exchanges,
+                        key=f"order_book_exchange_selector_{asset}"
+                    )
+                    
+                    # Filter for selected exchange
+                    selected_df = exchange_df[exchange_df['exchange_name'] == selected_exchange]
+                    
+                    # Map the available columns to required ones
+                    logger.info(f"Available exchange order book columns: {selected_df.columns.tolist()}")
+                    
+                    # Create mappings based on available columns
+                    asks_col = None
+                    bids_col = None
+                    
+                    # Try to find appropriate columns for asks and bids
+                    if 'aggregated_asks_usd' in selected_df.columns:
+                        asks_col = 'aggregated_asks_usd'
+                    elif 'asks_amount' in selected_df.columns:
+                        asks_col = 'asks_amount'
+                    elif 'asks_usd' in selected_df.columns:
+                        asks_col = 'asks_usd'
+                        
+                    if 'aggregated_bids_usd' in selected_df.columns:
+                        bids_col = 'aggregated_bids_usd'
+                    elif 'bids_amount' in selected_df.columns:
+                        bids_col = 'bids_amount'
+                    elif 'bids_usd' in selected_df.columns:
+                        bids_col = 'bids_usd'
+                    
+                    # Check for required columns
+                    if asks_col and bids_col:
+                        logger.info(f"Using {asks_col} for asks and {bids_col} for bids")
+                        st.subheader(f"{selected_exchange} {asset} Order Book")
+                        
+                        # Create time series chart for asks and bids
+                        fig = go.Figure()
+                        
+                        # Make sure data is sorted by datetime
+                        selected_df = selected_df.sort_values('datetime')
+                        
+                        fig.add_trace(go.Scatter(
+                            x=selected_df['datetime'],
+                            y=selected_df[asks_col],
+                            name='Asks Amount',
+                            line=dict(color='red')
+                        ))
+                        
+                        fig.add_trace(go.Scatter(
+                            x=selected_df['datetime'],
+                            y=selected_df[bids_col],
+                            name='Bids Amount',
+                            line=dict(color='green')
+                        ))
+                        
+                        # Update layout
+                        fig.update_layout(
+                            title=f"{selected_exchange} {asset} Order Book",
+                            xaxis_title=None,
+                            yaxis_title="Amount (USD)",
+                            hovermode="x unified"
+                        )
+                        
+                        display_chart(apply_chart_theme(fig))
+                        
+                        # Calculate ratio
+                        ratio_col = 'asks_bids_ratio'
+                        selected_df[ratio_col] = selected_df[asks_col] / selected_df[bids_col].replace(0, float('nan'))
+                        
+                        # Create ratio chart
+                        fig = px.line(
+                            selected_df,
+                            x='datetime',
+                            y=ratio_col,
+                            title=f"{selected_exchange} {asset} Ask/Bid Ratio"
+                        )
+                        
+                        # Add reference line at 1 (equal asks and bids)
+                        fig.add_hline(
+                            y=1,
+                            line_dash="dash",
+                            line_color="gray",
+                            annotation_text="Equal"
+                        )
+                        
+                        display_chart(apply_chart_theme(fig))
+                    else:
+                        logger.info("Exchange order book data doesn't have the required columns.")
             else:
-                st.info(f"No order book heatmap data available for {asset}.")
-        else:
-            st.info("No order book heatmap data available.")
+                logger.info("Exchange-specific order book data is not available for this asset.")
+        except Exception as e:
+            logger.error(f"Error in exchange order book processing: {e}", exc_info=True)
+            logger.info("Exchange order book data could not be processed.")
 
-def render_taker_buy_sell_page(asset):
-    """Render the taker buy/sell page for the specified asset."""
-    st.header("Spot Market Taker Buy/Sell Analysis")
-
+def render_taker_buy_sell_page(asset, all_selected_assets=None, selected_exchanges=None, selected_time_range=None):
+    """Render the taker buy/sell page for the specified asset and other selected assets.
+    
+    Parameters:
+    -----------
+    asset: str
+        Primary asset to display (for backward compatibility)
+    all_selected_assets: list
+        List of all selected assets to display
+    selected_exchanges: list
+        List of exchanges to display data for
+    selected_time_range: str
+        Selected time range for filtering data
+    """
+    if all_selected_assets is None or len(all_selected_assets) <= 1:
+        st.header(f"{asset} Spot Taker Buy/Sell Analysis")
+    else:
+        asset_str = ", ".join(all_selected_assets)
+        st.header(f"Spot Taker Buy/Sell Analysis: {asset_str}")
+        
+    # Exchange selector
+    # Define available exchanges for taker buy/sell
+    available_exchanges = ["Binance", "Coinbase", "Kraken", "OKX", "All"]
+    
+    # Default to session state if it exists, otherwise use All
+    default_exchanges = selected_exchanges if selected_exchanges else ["All"]
+    
+    # Add exchange selector
+    exchange_col1, exchange_col2 = st.columns([3, 1])
+    with exchange_col1:
+        selected_exchanges = st.multiselect(
+            "Select Exchanges to Display",
+            available_exchanges,
+            default=default_exchanges,
+            key=f"taker_buy_sell_exchange_selector_{asset}"
+        )
+    
+    # Ensure at least one exchange is selected
+    if not selected_exchanges:
+        selected_exchanges = ["All"]
+        logger.warning("At least one exchange must be selected. Defaulting to 'All'.")
+    
+    # Store in session state for this section
+    st.session_state.selected_taker_buy_sell_exchanges = selected_exchanges
+    
+    # For backward compatibility
+    st.session_state.selected_exchanges = selected_exchanges
+    
     # Load taker buy/sell data
     data = load_spot_data('taker_buy_sell', asset)
-
+    
     if not data:
-        st.info("No spot taker buy/sell data available.")
-        st.write("Taker buy/sell data shows the balance between buying and selling activities in the spot market.")
-
+        logger.info(f"No spot taker buy/sell data available for {asset}.")
+        
         # Show empty placeholder layout
         col1, col2, col3 = st.columns(3)
         with col1:
-            st.metric("Buy Volume", "$0", "0%")
+            st.metric("Buy Volume", "$0")
         with col2:
-            st.metric("Sell Volume", "$0", "0%")
+            st.metric("Sell Volume", "$0")
         with col3:
             st.metric("Buy/Sell Ratio", "0.00")
-
-        st.subheader("Buy/Sell Volume History")
-        st.write("No data available. Buy/sell volume charts will be displayed here when data is loaded.")
+            
+        st.subheader(f"{asset} Taker Buy/Sell History")
+        # Empty placeholder for taker buy/sell history charts
         return
-
-    # Check if aggregated taker buy/sell history is available
-    if 'api_spot_aggregated_taker_buy_sell_volume_history' in data:
-        taker_df = data['api_spot_aggregated_taker_buy_sell_volume_history']
-
-        if not taker_df.empty:
-            try:
-                # Process dataframe with timestamp, explicitly specify 'time' column
-                taker_df = process_timestamps(taker_df, timestamp_col='time')
-
-                logger.info(f"Taker buy/sell columns before mapping: {list(taker_df.columns)}")
-
-                # Map column names to expected values
-                column_mapping = {}
-
-                # Map the column names based on the actual data structure
-                if 'aggregated_buy_volume_usd' in taker_df.columns and 'buy_volume' not in taker_df.columns:
-                    column_mapping['aggregated_buy_volume_usd'] = 'buy_volume'
-
-                if 'aggregated_sell_volume_usd' in taker_df.columns and 'sell_volume' not in taker_df.columns:
-                    column_mapping['aggregated_sell_volume_usd'] = 'sell_volume'
-
-                # Apply column renaming if needed
-                if column_mapping:
-                    taker_df = taker_df.rename(columns=column_mapping)
-                    logger.info(f"Renamed columns using mapping: {column_mapping}")
-
-                logger.info(f"Taker buy/sell columns after mapping: {list(taker_df.columns)}")
-
-                # Calculate buy/sell ratio if it doesn't exist
-                if 'buy_sell_ratio' not in taker_df.columns:
-                    taker_df['buy_sell_ratio'] = taker_df['buy_volume'] / taker_df['sell_volume'].replace(0, float('nan'))
-
-                # Check if we have the required columns now
-                if 'buy_volume' in taker_df.columns and 'sell_volume' in taker_df.columns:
-                    # Calculate metrics from most recent data point
-                    recent_taker = taker_df.iloc[-1] if len(taker_df) > 0 else None
-
-                    if recent_taker is not None:
-                        buy_volume = recent_taker['buy_volume']
-                        sell_volume = recent_taker['sell_volume']
-                        ratio = recent_taker['buy_sell_ratio']
-
-                        # Create metrics
-                        metrics = {
-                            "Buy Volume": {
-                                "value": buy_volume,
-                                "delta": None
-                            },
-                            "Sell Volume": {
-                                "value": sell_volume,
-                                "delta": None
-                            },
-                            "Buy/Sell Ratio": {
-                                "value": ratio,
-                                "delta": None
-                            }
+    
+    # Get taker buy/sell history from Coinglass API data
+    possible_keys = [
+        f"api_spot_aggregated_taker_buy_sell_volume_history_{asset}_{asset}",
+        f"api_spot_aggregated_taker_buy_sell_volume_history_{asset}",
+        "api_spot_aggregated_taker_buy_sell_volume_history"
+    ]
+    
+    history_df = None
+    for key in possible_keys:
+        if key in data and not data[key].empty:
+            history_df = data[key].copy()
+            logger.info(f"Found taker buy/sell history data using key: {key}")
+            break
+    
+    # Process taker buy/sell data if available
+    if history_df is not None and not history_df.empty:
+        try:
+            # Process timestamps if needed
+            history_df = process_timestamps(history_df)
+            
+            # Check for required columns
+            # Map the available columns to required ones
+            logger.info(f"Available taker buy/sell columns: {history_df.columns.tolist()}")
+            
+            # Create mappings based on available columns
+            buy_col = None
+            sell_col = None
+            
+            # Try to find appropriate columns for buy and sell volumes
+            if 'aggregated_buy_volume_usd' in history_df.columns:
+                buy_col = 'aggregated_buy_volume_usd'
+            elif 'buy_volume' in history_df.columns:
+                buy_col = 'buy_volume'
+            elif 'taker_buy_volume' in history_df.columns:
+                buy_col = 'taker_buy_volume'
+            elif 'buy_volume_usd' in history_df.columns:
+                buy_col = 'buy_volume_usd'
+                
+            if 'aggregated_sell_volume_usd' in history_df.columns:
+                sell_col = 'aggregated_sell_volume_usd'
+            elif 'sell_volume' in history_df.columns:
+                sell_col = 'sell_volume'
+            elif 'taker_sell_volume' in history_df.columns:
+                sell_col = 'taker_sell_volume'
+            elif 'sell_volume_usd' in history_df.columns:
+                sell_col = 'sell_volume_usd'
+            
+            # For backward compatibility, create standardized column names
+            if buy_col and buy_col != 'buy_volume':
+                history_df['buy_volume'] = history_df[buy_col]
+                logger.info(f"Created 'buy_volume' from {buy_col}")
+                
+            if sell_col and sell_col != 'sell_volume':
+                history_df['sell_volume'] = history_df[sell_col]
+                logger.info(f"Created 'sell_volume' from {sell_col}")
+                
+            # Calculate metrics if we have the required columns
+            if ('buy_volume' in history_df.columns or buy_col) and ('sell_volume' in history_df.columns or sell_col):
+                # Calculate buy/sell ratio
+                history_df['buy_sell_ratio'] = history_df['buy_volume'] / history_df['sell_volume'].replace(0, float('nan'))
+                
+                # Get most recent values for metrics
+                if not history_df.empty:
+                    recent_data = history_df.iloc[-1]
+                    buy_volume = recent_data['buy_volume']
+                    sell_volume = recent_data['sell_volume']
+                    ratio = buy_volume / sell_volume if sell_volume != 0 else float('nan')
+                    
+                    # Display metrics
+                    metrics = {
+                        "Buy Volume": {
+                            "value": buy_volume,
+                            "delta": None
+                        },
+                        "Sell Volume": {
+                            "value": sell_volume,
+                            "delta": None
+                        },
+                        "Buy/Sell Ratio": {
+                            "value": ratio,
+                            "delta": None
                         }
-
-                        formatters = {
-                            "Buy Volume": lambda x: format_currency(x, abbreviate=True),
-                            "Sell Volume": lambda x: format_currency(x, abbreviate=True),
-                            "Buy/Sell Ratio": lambda x: f"{x:.4f}" if x is not None else "N/A"
-                        }
-
-                        display_metrics_row(metrics, formatters)
-
-                    # Create stacked bar chart for buy/sell volume
-                    st.subheader("Taker Buy/Sell Volume History")
-
-                    fig = go.Figure()
-
-                    fig.add_trace(go.Bar(
-                        x=taker_df['datetime'],
-                        y=taker_df['buy_volume'],
-                        name='Buy Volume',
-                        marker_color='green'
-                    ))
-
-                    fig.add_trace(go.Bar(
-                        x=taker_df['datetime'],
-                        y=taker_df['sell_volume'],
-                        name='Sell Volume',
-                        marker_color='red'
-                    ))
-
-                    # Update layout
-                    fig.update_layout(
-                        title="Taker Buy/Sell Volume History (All Coins)",
-                        barmode='group',
-                        xaxis_title=None,
-                        yaxis_title="Volume (USD)",
-                        hovermode="x unified"
-                    )
-
-                    display_chart(apply_chart_theme(fig))
-
-                    # Create buy/sell ratio chart
-                    st.subheader("Buy/Sell Ratio History")
-
-                    fig = px.line(
-                        taker_df,
-                        x='datetime',
-                        y='buy_sell_ratio',
-                        title="Taker Buy/Sell Ratio History (All Coins)"
-                    )
-
-                    # Add reference line at 1 (equal buy and sell)
-                    fig.add_hline(
-                        y=1,
-                        line_dash="dash",
-                        line_color="gray",
-                        annotation_text="Equal"
-                    )
-
-                    display_chart(apply_chart_theme(fig))
-
-                    # Add analysis of buy/sell ratio
-                    st.subheader("Buy/Sell Ratio Analysis")
-
-                    # Calculate average ratio and trend
-                    avg_ratio = taker_df['buy_sell_ratio'].mean()
-
-                    # Calculate the trend in the ratio
-                    if len(taker_df) > 5:  # Need a reasonable amount of data for trend
-                        recent_5 = taker_df.iloc[-5:]
-                        avg_5 = recent_5['buy_sell_ratio'].mean()
-
-                        trend_description = ""
-                        if avg_5 > 1.05:
-                            trend_description = "Currently trending toward **buying pressure** (ratio > 1.05)"
-                        elif avg_5 < 0.95:
-                            trend_description = "Currently trending toward **selling pressure** (ratio < 0.95)"
-                        else:
-                            trend_description = "Currently showing **balanced** buying and selling (0.95 ≤ ratio ≤ 1.05)"
-
-                        st.write(f"Average Buy/Sell Ratio: **{avg_ratio:.4f}**")
-                        st.write(trend_description)
-
-                        # Add some market interpretation
-                        if avg_5 > avg_ratio:
-                            st.write("Recent buy/sell ratio is **above** the historical average, suggesting increasing buy pressure.")
-                        elif avg_5 < avg_ratio:
-                            st.write("Recent buy/sell ratio is **below** the historical average, suggesting increasing sell pressure.")
-                        else:
-                            st.write("Recent buy/sell ratio is consistent with the historical average.")
-                else:
-                    st.error(f"Missing required columns after mapping. Current columns: {list(taker_df.columns)}")
-                    st.dataframe(taker_df.head())  # Show raw data for debugging
-            except Exception as e:
-                st.error(f"Error processing taker buy/sell data: {e}")
-                logger.error(f"Error in taker buy/sell processing: {e}", exc_info=True)
-
-                # Try to show the raw data for debugging
-                st.info("Original data format:")
-                try:
-                    # Show a few rows of the original data for debugging
-                    raw_df = data['api_spot_aggregated_taker_buy_sell_volume_history']
-                    st.dataframe(raw_df.head())
-                except:
-                    st.write("Could not display raw data.")
-        else:
-            st.info("Taker buy/sell data file is empty.")
+                    }
+                    
+                    formatters = {
+                        "Buy Volume": lambda x: format_currency(x, abbreviate=True),
+                        "Sell Volume": lambda x: format_currency(x, abbreviate=True),
+                        "Buy/Sell Ratio": lambda x: f"{x:.4f}" if pd.notna(x) else "N/A"
+                    }
+                    
+                    display_metrics_row(metrics, formatters)
+                
+                # Create time series chart for buy and sell volumes
+                st.subheader(f"{asset} Taker Buy/Sell History")
+                
+                fig = go.Figure()
+                
+                fig.add_trace(go.Scatter(
+                    x=history_df['datetime'],
+                    y=history_df['buy_volume'],
+                    name='Buy Volume',
+                    line=dict(color='green')
+                ))
+                
+                fig.add_trace(go.Scatter(
+                    x=history_df['datetime'],
+                    y=history_df['sell_volume'],
+                    name='Sell Volume',
+                    line=dict(color='red')
+                ))
+                
+                # Update layout
+                fig.update_layout(
+                    title=f"{asset} Taker Buy/Sell Volume",
+                    xaxis_title=None,
+                    yaxis_title="Volume (USD)",
+                    hovermode="x unified"
+                )
+                
+                display_chart(apply_chart_theme(fig))
+                
+                # Create ratio chart if buy_sell_ratio exists
+                st.subheader(f"{asset} Buy/Sell Ratio")
+                
+                fig = px.line(
+                    history_df,
+                    x='datetime',
+                    y='buy_sell_ratio',
+                    title=f"{asset} Buy/Sell Ratio"
+                )
+                
+                # Add reference line at 1 (equal buy and sell)
+                fig.add_hline(
+                    y=1,
+                    line_dash="dash",
+                    line_color="gray",
+                    annotation_text="Equal"
+                )
+                
+                display_chart(apply_chart_theme(fig))
+                
+                # Create net flow chart
+                st.subheader(f"{asset} Net Flow (Buy - Sell)")
+                
+                # Calculate net flow
+                history_df['net_flow'] = history_df['buy_volume'] - history_df['sell_volume']
+                
+                fig = px.bar(
+                    history_df,
+                    x='datetime',
+                    y='net_flow',
+                    title=f"{asset} Net Flow (Buy - Sell Volume)",
+                    color='net_flow',
+                    color_continuous_scale=['red', 'green'],
+                    color_continuous_midpoint=0
+                )
+                
+                # Update layout
+                fig.update_layout(
+                    xaxis_title=None,
+                    yaxis_title="Net Flow (USD)",
+                    coloraxis_showscale=False
+                )
+                
+                # Add reference line at 0
+                fig.add_hline(
+                    y=0,
+                    line_dash="dash",
+                    line_color="gray"
+                )
+                
+                display_chart(apply_chart_theme(fig))
+            else:
+                logger.warning(f"Taker buy/sell data is missing required columns. Available columns: {list(history_df.columns)}")
+        except Exception as e:
+            logger.error(f"Error processing taker buy/sell data: {e}")
+            logger.error(f"Error in taker buy/sell processing: {e}", exc_info=True)
+            logger.info("Unable to display taker buy/sell data due to data format issues.")
     else:
-        # Try looking for other possible files
-        other_keys = [k for k in data.keys() if 'taker' in k.lower() or 'buy_sell' in k.lower()]
-
-        if other_keys:
-            st.info(f"Aggregated taker buy/sell data not found. Found alternative data files: {', '.join(other_keys)}")
-            st.write("Please contact the developer to update the implementation for these data files.")
-        else:
-            st.info("No taker buy/sell data files found in the data directory.")
+        logger.warning(f"No taker buy/sell history data available for {asset}.")
 
 def main():
     """Main function to render the spot page."""
@@ -834,19 +1751,44 @@ def main():
     # Page title
     st.title("Cryptocurrency Spot Markets")
 
-    # Get asset from session state or use default
+    # Get available assets for spot category
     available_assets = get_available_assets_for_category('spot')
 
     # Set default assets if none are available
     if not available_assets:
-        st.warning("No spot data available for any asset. Showing layout with placeholder data.")
+        logger.warning("No spot data available for any asset. Showing layout with placeholder data.")
         available_assets = ["BTC", "ETH", "SOL", "XRP"]
-
-    asset = st.session_state.get('selected_asset', available_assets[0])
+    
+    # Asset selection with dropdown
+    st.subheader("Select Asset to Display")
+    
+    # Initialize with previously selected asset if available, otherwise default to first asset
+    default_asset = st.session_state.get('selected_spot_assets', [available_assets[0]])
+    default_index = available_assets.index(default_asset[0]) if default_asset and default_asset[0] in available_assets else 0
+    
+    # Add dropdown for asset selection (improved from multiselect for better UI)
+    selected_asset = st.selectbox(
+        "Select asset to display",
+        available_assets,
+        index=default_index,
+        key="spot_assets_selector"
+    )
+    
+    # Use a single asset in a list for compatibility with existing code
+    selected_assets = [selected_asset]
+    
+    # Store selected assets in session state for this page
+    st.session_state.selected_spot_assets = selected_assets
+    
+    # For backward compatibility with existing code, use first selected asset as primary
+    asset = selected_assets[0]
+    
+    # Also update the general selected_asset session state for compatibility
+    st.session_state.selected_asset = asset
 
     # Define categories
     spot_categories = [
-        "Market Data",
+        "Live Price",
         "Order Book",
         "Taker Buy/Sell"
     ]
@@ -856,6 +1798,9 @@ def main():
 
     # Find the index of the currently active category
     current_subcategory = st.session_state.get('spot_subcategory', 'market_data').replace('_', ' ').title()
+    # Handle special case for 'Market Data' -> 'Live Price' 
+    if current_subcategory == "Market Data":
+        current_subcategory = "Live Price"
     active_tab = 0
     for i, cat in enumerate(spot_categories):
         if cat == current_subcategory:
@@ -871,19 +1816,28 @@ def main():
             if active_tab == 0 or True:  # Always load since Streamlit may show any tab
                 subcategory = 'market_data'
                 st.session_state.spot_subcategory = subcategory
-                render_market_data_page(asset)
+                # Use page-specific exchange selection if available, otherwise use general selection
+                selected_market_exchanges = st.session_state.get('selected_spot_market_exchanges', 
+                                                    st.session_state.get('selected_exchanges', ["All"]))
+                render_market_data_page(asset, selected_assets, selected_market_exchanges)
 
         with tabs[1]:  # Order Book
             if active_tab == 1 or True:  # Always load since Streamlit may show any tab
                 subcategory = 'order_book'
                 st.session_state.spot_subcategory = subcategory
-                render_order_book_page(asset)
+                # Use page-specific exchange selection if available, otherwise use general selection
+                selected_orderbook_exchanges = st.session_state.get('selected_spot_orderbook_exchanges', 
+                                                     st.session_state.get('selected_exchanges', ["All"]))
+                render_order_book_page(asset, selected_assets, selected_orderbook_exchanges)
 
         with tabs[2]:  # Taker Buy/Sell
             if active_tab == 2 or True:  # Always load since Streamlit may show any tab
                 subcategory = 'taker_buy_sell'
                 st.session_state.spot_subcategory = subcategory
-                render_taker_buy_sell_page(asset)
+                # Use page-specific exchange selection if available, otherwise use general selection
+                selected_taker_exchanges = st.session_state.get('selected_taker_buy_sell_exchanges', 
+                                                  st.session_state.get('selected_exchanges', ["All"]))
+                render_taker_buy_sell_page(asset, selected_assets, selected_taker_exchanges)
 
     except Exception as e:
         # If there's an error, log it but don't show to user - they'll just see empty tabs
@@ -896,19 +1850,21 @@ def main():
                 try:
                     # Use function dispatch to render the appropriate page
                     if subcategory == 'market_data':
-                        render_market_data_page(asset)
+                        selected_market_exchanges = st.session_state.get('selected_spot_market_exchanges', 
+                                                       st.session_state.get('selected_exchanges', ["All"]))
+                        render_market_data_page(asset, selected_assets, selected_market_exchanges)
                     elif subcategory == 'order_book':
-                        render_order_book_page(asset)
+                        selected_orderbook_exchanges = st.session_state.get('selected_spot_orderbook_exchanges', 
+                                                        st.session_state.get('selected_exchanges', ["All"]))
+                        render_order_book_page(asset, selected_assets, selected_orderbook_exchanges)
                     elif subcategory == 'taker_buy_sell':
-                        render_taker_buy_sell_page(asset)
+                        selected_taker_exchanges = st.session_state.get('selected_taker_buy_sell_exchanges', 
+                                                     st.session_state.get('selected_exchanges', ["All"]))
+                        render_taker_buy_sell_page(asset, selected_assets, selected_taker_exchanges)
                 except Exception as tab_error:
-                    st.error(f"Error rendering {subcategory} data: {tab_error}")
-                    st.info("There was an error processing the data. This could be due to an unexpected data format or missing data.")
+                    logger.error(f"Error rendering {subcategory} data: {tab_error}")
+                    logger.info("There was an error processing the data. This could be due to an unexpected data format or missing data.")
     
-    # Add footer
-    st.markdown("---")
-    st.caption("Izun Crypto Liquidity Report © 2025")
-    st.caption("Data provided by CoinGlass API")
 
 if __name__ == "__main__":
     main()

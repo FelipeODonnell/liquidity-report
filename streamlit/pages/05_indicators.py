@@ -83,8 +83,16 @@ def load_indicators_data():
     
     return data
 
-def render_fear_greed_index(data):
-    """Render the fear & greed index visualization."""
+def render_fear_greed_index(data, selected_time_range=None):
+    """Render the fear & greed index visualization.
+    
+    Parameters:
+    -----------
+    data : dict
+        Dictionary containing indicators data
+    selected_time_range : str, optional
+        Selected time range for filtering data
+    """
     st.header("Fear & Greed Index")
 
     try:
@@ -191,6 +199,10 @@ def render_fear_greed_index(data):
                         )
 
                         display_chart(apply_chart_theme(fig))
+                        
+                        # Set defaults in session state for backward compatibility
+                        st.session_state.fear_greed_time_range = 'All'
+                        st.session_state.selected_time_range = 'All'
 
                     # Explanation
                     st.markdown("""
@@ -253,6 +265,10 @@ def render_fear_greed_index(data):
                             fig.update_yaxes(title_text="Price (USD)", secondary_y=True)
 
                             display_chart(apply_chart_theme(fig))
+                            
+                            # Set defaults in session state for backward compatibility
+                            st.session_state.fear_greed_price_time_range = 'All'
+                            st.session_state.selected_time_range = 'All'
                         except Exception as e:
                             logger.error(f"Error creating dual-axis chart: {e}")
                             st.error("Could not create Fear & Greed vs Price chart. Using simple chart instead.")
@@ -289,8 +305,16 @@ def render_fear_greed_index(data):
         logger.error(f"Error in render_fear_greed_index: {e}")
         st.error("An error occurred while rendering Fear & Greed Index")
 
-def render_bitcoin_cycles(data):
-    """Render Bitcoin cycle indicators."""
+def render_bitcoin_cycles(data, selected_time_range=None):
+    """Render Bitcoin cycle indicators.
+    
+    Parameters:
+    -----------
+    data : dict
+        Dictionary containing indicators data
+    selected_time_range : str, optional
+        Selected time range for filtering data
+    """
     st.header("Bitcoin Cycle Indicators")
 
     # Rainbow chart removed as requested
@@ -550,13 +574,6 @@ def render_bull_market_peak_indicator(df, title):
 
         display_chart(apply_chart_theme(fig))
 
-        # Create a table view of all indicators
-        st.subheader(f"{title} - Table View")
-
-        # Clean the dataframe for display
-        display_df = df[['indicator_name', 'current_value', 'target_value', 'comparison_type', 'hit_status']].copy()
-        display_df.columns = ['Indicator', 'Current Value', 'Target Value', 'Comparison', 'Target Met']
-        st.dataframe(display_df, hide_index=True)
 
         # Explanation
         st.markdown("""
@@ -1028,11 +1045,7 @@ def main():
             data = load_indicators_data()
 
         # Get the last updated time
-        last_updated = get_data_last_updated()
-        last_updated_str = format_timestamp(last_updated) if last_updated else "Unknown"
-
-        # Show data date info
-        st.caption(f"Data as of: {last_updated_str}")
+        # Removed data last updated reference
 
         # Check if data is available
         if not data:
@@ -1071,10 +1084,6 @@ def main():
             with tab3:
                 st.error("Error displaying Market Metrics. Please check the logs for details.")
 
-        # Add footer
-        st.markdown("---")
-        st.caption("Izun Crypto Liquidity Report © 2025")
-        st.caption("Data provided by CoinGlass API")
 
     except Exception as e:
         logger.error(f"Error in main function: {e}")

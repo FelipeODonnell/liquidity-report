@@ -83,9 +83,51 @@ def load_options_data(asset):
     
     return data
 
-def render_options_info(data, asset):
-    """Render options market information."""
+def render_options_info(data, asset, all_selected_assets=None, selected_exchanges=None, selected_time_range=None):
+    """Render options market information.
+    
+    Parameters:
+    -----------
+    data : dict
+        Dictionary containing options data
+    asset : str
+        Primary asset to display (for backward compatibility)
+    all_selected_assets : list, optional
+        List of all selected assets to display
+    selected_exchanges : list, optional
+        List of exchanges to display data for
+    selected_time_range : str, optional
+        Selected time range for filtering data
+    """
     st.header(f"{asset} Options Market Overview")
+    
+    # Exchange selector
+    # Define available exchanges for options market data
+    available_exchanges = ["Deribit", "OKX", "Binance", "All"]
+    
+    # Default to session state if it exists, otherwise use All
+    default_exchanges = selected_exchanges if selected_exchanges else ["All"]
+    
+    # Add exchange selector
+    exchange_col1, exchange_col2 = st.columns([3, 1])
+    with exchange_col1:
+        selected_exchanges = st.multiselect(
+            "Select Exchanges to Display",
+            available_exchanges,
+            default=default_exchanges,
+            key=f"options_info_exchange_selector_{asset}"
+        )
+    
+    # Ensure at least one exchange is selected
+    if not selected_exchanges:
+        selected_exchanges = ["All"]
+        st.warning("At least one exchange must be selected. Defaulting to 'All'.")
+    
+    # Store in session state for this section
+    st.session_state.selected_options_info_exchanges = selected_exchanges
+    
+    # For backward compatibility
+    st.session_state.selected_exchanges = selected_exchanges
 
     # Options info data - try different possible key formats
     options_info_key = None
@@ -111,6 +153,10 @@ def render_options_info(data, asset):
             # Filter for the asset if needed (for generic key)
             if options_info_key == "api_option_info" and 'symbol' in options_df.columns:
                 options_df = options_df[options_df['symbol'].str.contains(asset, case=False, na=False)]
+                
+            # Filter by selected exchanges if needed (if not "All")
+            if 'exchange_name' in options_df.columns and selected_exchanges and "All" not in selected_exchanges:
+                options_df = options_df[options_df['exchange_name'].isin(selected_exchanges)]
 
             # Check if we have the key metrics
             has_oi = any(col in options_df.columns for col in ['open_interest', 'open_interest_usd'])
@@ -241,6 +287,13 @@ def render_options_info(data, asset):
                 )
 
                 display_chart(fig)
+                
+                # The pie chart represents current market share, not historical data
+                
+                # Maintain compatibility with session state
+                default_time_range = selected_time_range if selected_time_range else st.session_state.get('selected_time_range', '3M')
+                st.session_state.options_market_time_range = default_time_range
+                st.session_state.selected_time_range = default_time_range
 
             # Explanation
             st.markdown(f"""
@@ -262,9 +315,51 @@ def render_options_info(data, asset):
     else:
         st.info(f"No options market information available for {asset}.")
 
-def render_max_pain(data, asset):
-    """Render options max pain visualization."""
+def render_max_pain(data, asset, all_selected_assets=None, selected_exchanges=None, selected_time_range=None):
+    """Render options max pain visualization.
+    
+    Parameters:
+    -----------
+    data : dict
+        Dictionary containing options data
+    asset : str
+        Primary asset to display (for backward compatibility)
+    all_selected_assets : list, optional
+        List of all selected assets to display
+    selected_exchanges : list, optional
+        List of exchanges to display data for
+    selected_time_range : str, optional
+        Selected time range for filtering data
+    """
     st.header(f"{asset} Options Max Pain")
+    
+    # Exchange selector
+    # Define available exchanges for options max pain
+    available_exchanges = ["Deribit", "OKX", "Binance", "All"]
+    
+    # Default to session state if it exists, otherwise use All
+    default_exchanges = selected_exchanges if selected_exchanges else ["All"]
+    
+    # Add exchange selector
+    exchange_col1, exchange_col2 = st.columns([3, 1])
+    with exchange_col1:
+        selected_exchanges = st.multiselect(
+            "Select Exchanges to Display",
+            available_exchanges,
+            default=default_exchanges,
+            key=f"options_max_pain_exchange_selector_{asset}"
+        )
+    
+    # Ensure at least one exchange is selected
+    if not selected_exchanges:
+        selected_exchanges = ["All"]
+        st.warning("At least one exchange must be selected. Defaulting to 'All'.")
+    
+    # Store in session state for this section
+    st.session_state.selected_max_pain_exchanges = selected_exchanges
+    
+    # For backward compatibility
+    st.session_state.selected_exchanges = selected_exchanges
 
     # Max pain data - try different possible key formats
     max_pain_key = None
@@ -290,6 +385,10 @@ def render_max_pain(data, asset):
             # Filter for the specific asset if using a generic key
             if max_pain_key == "api_option_max_pain" and 'symbol' in max_pain_df.columns:
                 max_pain_df = max_pain_df[max_pain_df['symbol'].str.contains(asset, case=False, na=False)]
+                
+            # Filter by selected exchanges if needed (if not "All")
+            if 'exchange_name' in max_pain_df.columns and selected_exchanges and "All" not in selected_exchanges:
+                max_pain_df = max_pain_df[max_pain_df['exchange_name'].isin(selected_exchanges)]
 
             # Check and rename columns if needed
             date_col = None
@@ -397,6 +496,11 @@ def render_max_pain(data, asset):
                         )
 
                         display_chart(apply_chart_theme(fig))
+                        
+                        
+                        # Set defaults in session state for backward compatibility
+                        st.session_state.max_pain_time_range = 'All'
+                        st.session_state.selected_time_range = 'All'
                     except Exception as chart_error:
                         st.error(f"Error creating max pain chart: {chart_error}")
                         # Show the data in a table instead
@@ -557,9 +661,51 @@ def render_max_pain(data, asset):
     else:
         st.info(f"No max pain data available for {asset}.")
 
-def render_options_volume(data, asset):
-    """Render options volume visualization."""
+def render_options_volume(data, asset, all_selected_assets=None, selected_exchanges=None, selected_time_range=None):
+    """Render options volume visualization.
+    
+    Parameters:
+    -----------
+    data : dict
+        Dictionary containing options data
+    asset : str
+        Primary asset to display (for backward compatibility)
+    all_selected_assets : list, optional
+        List of all selected assets to display
+    selected_exchanges : list, optional
+        List of exchanges to display data for
+    selected_time_range : str, optional
+        Selected time range for filtering data
+    """
     st.header(f"{asset} Options Volume")
+    
+    # Exchange selector
+    # Define available exchanges for options volume
+    available_exchanges = ["Deribit", "OKX", "Binance", "All"]
+    
+    # Default to session state if it exists, otherwise use All
+    default_exchanges = selected_exchanges if selected_exchanges else ["All"]
+    
+    # Add exchange selector
+    exchange_col1, exchange_col2 = st.columns([3, 1])
+    with exchange_col1:
+        selected_exchanges = st.multiselect(
+            "Select Exchanges to Display",
+            available_exchanges,
+            default=default_exchanges,
+            key=f"options_volume_exchange_selector_{asset}"
+        )
+    
+    # Ensure at least one exchange is selected
+    if not selected_exchanges:
+        selected_exchanges = ["All"]
+        st.warning("At least one exchange must be selected. Defaulting to 'All'.")
+    
+    # Store in session state for this section
+    st.session_state.selected_options_volume_exchanges = selected_exchanges
+    
+    # For backward compatibility
+    st.session_state.selected_exchanges = selected_exchanges
     
     # Options volume data
     if 'api_option_exchange_vol_history' in data and not data['api_option_exchange_vol_history'].empty:
@@ -569,6 +715,10 @@ def render_options_volume(data, asset):
         asset_volume = volume_df
         if 'symbol' in volume_df.columns:
             asset_volume = volume_df[volume_df['symbol'].str.contains(asset, case=False, na=False)]
+            
+        # Filter by selected exchanges if needed (if not "All")
+        if 'exchange_name' in asset_volume.columns and selected_exchanges and "All" not in selected_exchanges:
+            asset_volume = asset_volume[asset_volume['exchange_name'].isin(selected_exchanges)]
         
         if not asset_volume.empty:
             # Process dataframe
@@ -589,6 +739,11 @@ def render_options_volume(data, asset):
             
             display_chart(fig)
             
+            
+            # Set defaults in session state for backward compatibility
+            st.session_state.options_volume_time_range = 'All'
+            st.session_state.selected_time_range = 'All'
+            
             # Create by exchange breakdown if available
             if 'exchange_name' in asset_volume.columns:
                 st.subheader(f"{asset} Options Volume by Exchange")
@@ -606,14 +761,58 @@ def render_options_volume(data, asset):
                 )
                 
                 display_chart(fig)
+                
+                # The pie chart represents current volume distribution
         else:
             st.info(f"No options volume data available for {asset}.")
     else:
         st.info(f"No options volume data available.")
 
-def render_options_oi(data, asset):
-    """Render options open interest visualization."""
+def render_options_oi(data, asset, all_selected_assets=None, selected_exchanges=None, selected_time_range=None):
+    """Render options open interest visualization.
+    
+    Parameters:
+    -----------
+    data : dict
+        Dictionary containing options data
+    asset : str
+        Primary asset to display (for backward compatibility)
+    all_selected_assets : list, optional
+        List of all selected assets to display
+    selected_exchanges : list, optional
+        List of exchanges to display data for
+    selected_time_range : str, optional
+        Selected time range for filtering data
+    """
     st.header(f"{asset} Options Open Interest")
+    
+    # Exchange selector
+    # Define available exchanges for options OI
+    available_exchanges = ["Deribit", "OKX", "Binance", "All"]
+    
+    # Default to session state if it exists, otherwise use All
+    default_exchanges = selected_exchanges if selected_exchanges else ["All"]
+    
+    # Add exchange selector
+    exchange_col1, exchange_col2 = st.columns([3, 1])
+    with exchange_col1:
+        selected_exchanges = st.multiselect(
+            "Select Exchanges to Display",
+            available_exchanges,
+            default=default_exchanges,
+            key=f"options_oi_exchange_selector_{asset}"
+        )
+    
+    # Ensure at least one exchange is selected
+    if not selected_exchanges:
+        selected_exchanges = ["All"]
+        st.warning("At least one exchange must be selected. Defaulting to 'All'.")
+    
+    # Store in session state for this section
+    st.session_state.selected_options_oi_exchanges = selected_exchanges
+    
+    # For backward compatibility
+    st.session_state.selected_exchanges = selected_exchanges
     
     # Options OI data
     if 'api_option_exchange_oi_history' in data and not data['api_option_exchange_oi_history'].empty:
@@ -623,6 +822,10 @@ def render_options_oi(data, asset):
         asset_oi = oi_df
         if 'symbol' in oi_df.columns:
             asset_oi = oi_df[oi_df['symbol'].str.contains(asset, case=False, na=False)]
+            
+        # Filter by selected exchanges if needed (if not "All")
+        if 'exchange_name' in asset_oi.columns and selected_exchanges and "All" not in selected_exchanges:
+            asset_oi = asset_oi[asset_oi['exchange_name'].isin(selected_exchanges)]
         
         if not asset_oi.empty:
             # Process dataframe
@@ -643,6 +846,11 @@ def render_options_oi(data, asset):
             
             display_chart(fig)
             
+            
+            # Set defaults in session state for backward compatibility
+            st.session_state.options_oi_time_range = 'All'
+            st.session_state.selected_time_range = 'All'
+            
             # Create by exchange breakdown if available
             if 'exchange_name' in asset_oi.columns:
                 st.subheader(f"{asset} Options Open Interest by Exchange")
@@ -660,6 +868,8 @@ def render_options_oi(data, asset):
                 )
                 
                 display_chart(fig)
+                
+                # The pie chart represents current open interest distribution
         else:
             st.info(f"No options open interest data available for {asset}.")
     else:
@@ -675,25 +885,46 @@ def main():
         st.title("Cryptocurrency Options Markets")
         st.write("Analysis of cryptocurrency options markets and metrics")
 
-        # Get asset from session state or use default
+        # Get available assets for options category
         available_assets = get_available_assets_for_category('options')
 
         if not available_assets:
             st.error("No options data available for any asset.")
             return
-
-        asset = st.session_state.get('selected_asset', available_assets[0])
+        
+        # Asset selection with dropdown
+        st.subheader("Select Asset to Display")
+        
+        # Initialize with previously selected asset if available, otherwise default to first asset
+        default_asset = st.session_state.get('selected_options_assets', [available_assets[0]])
+        default_index = available_assets.index(default_asset[0]) if default_asset and default_asset[0] in available_assets else 0
+        
+        # Add dropdown for asset selection (improved from multiselect for better UI)
+        selected_asset = st.selectbox(
+            "Select asset to display",
+            available_assets,
+            index=default_index,
+            key="options_assets_selector"
+        )
+        
+        # Use a single asset in a list for compatibility with existing code
+        selected_assets = [selected_asset]
+        
+        # Store selected assets in session state for this page
+        st.session_state.selected_options_assets = selected_assets
+        
+        # For backward compatibility with existing code, use first selected asset as primary
+        asset = selected_assets[0]
+        
+        # Also update the general selected_asset session state for compatibility
+        st.session_state.selected_asset = asset
 
         # Display loading message
         with st.spinner(f"Loading {asset} options data..."):
             data = load_options_data(asset)
 
         # Get the last updated time
-        last_updated = get_data_last_updated()
-        last_updated_str = format_timestamp(last_updated) if last_updated else "Unknown"
-
-        # Show data date info
-        st.caption(f"Data as of: {last_updated_str}")
+        # Removed data last updated reference
 
         # Check if data is available
         if not data:
@@ -725,14 +956,13 @@ def main():
         for i, tab_name in enumerate(tab_options):
             with tabs[i]:
                 if tab_name == "Market Overview":
-                    render_options_info(data, asset)
+                    # Get time range from session state
+                    selected_time_range = st.session_state.get('selected_time_range', '3M')
+                    render_options_info(data, asset, selected_assets, None, selected_time_range)
                 elif tab_name == "Max Pain":
-                    render_max_pain(data, asset)
+                    selected_time_range = st.session_state.get('selected_time_range', '3M')
+                    render_max_pain(data, asset, selected_assets, None, selected_time_range)
 
-        # Add footer
-        st.markdown("---")
-        st.caption("Izun Crypto Liquidity Report © 2025")
-        st.caption("Data provided by CoinGlass API")
     except Exception as e:
         st.error(f"Error rendering options page: {e}")
         # Show at least some data if available

@@ -485,12 +485,7 @@ def main():
     with st.spinner("Loading dashboard data..."):
         data = load_report_data()
     
-    # Get the last updated time
-    last_updated = get_data_last_updated()
-    last_updated_str = format_timestamp(last_updated) if last_updated else "Unknown"
-    
-    # Show data date info
-    st.caption(f"Data as of: {last_updated_str}")
+    # Removed data last updated reference
     
     # Check if data is available
     if not data:
@@ -705,17 +700,26 @@ def main():
                             break
                 
                 if volume_by_exchange is not None and not volume_by_exchange.empty:
-                    # Create pie chart for volume distribution
-                    fig = px.pie(
-                        volume_by_exchange.head(8),  # Top 8 exchanges
-                        values='volume_usd',
-                        names='exchange_name',
+                    # Create pie chart for volume distribution using improved function
+                    # Filter out any "All" values that shouldn't be in the pie chart
+                    filtered_volume_data = volume_by_exchange[volume_by_exchange['exchange_name'] != "All"]
+                    
+                    # Import enhanced pie chart function
+                    from utils.chart_utils import create_enhanced_pie_chart
+                    
+                    fig = create_enhanced_pie_chart(
+                        df=filtered_volume_data,
+                        values_col='volume_usd',
+                        names_col='exchange_name',
                         title=f"{asset} Trading Volume by Exchange",
-                        color_discrete_map=EXCHANGE_COLORS
+                        color_map=EXCHANGE_COLORS,
+                        exclude_names=["All"],
+                        show_top_n=8,  # Show top 8 exchanges
+                        min_percent=2.0,  # Group exchanges with less than 2% share
+                        height=400
                     )
                     
-                    fig.update_traces(textposition='inside', textinfo='percent+label')
-                    display_chart(apply_chart_theme(fig))
+                    display_chart(fig)
                 else:
                     display_chart(create_fallback_chart(f"{asset} Trading Volume by Exchange", "No exchange volume data available"))
         else:
@@ -969,6 +973,10 @@ def main():
                 )
                 
                 display_chart(apply_chart_theme(fig))
+                
+                # Set defaults in session state for backward compatibility
+                st.session_state.oi_history_time_range = 'All'
+                st.session_state.selected_time_range = 'All'
             else:
                 display_chart(create_fallback_chart(f"{asset} Open Interest History", "Incomplete open interest data"))
         else:
@@ -987,16 +995,22 @@ def main():
             if oi_col and 'exchange_name' in oi_exchange_df.columns:
                 oi_by_exchange = oi_exchange_df[['exchange_name', oi_col]].sort_values(oi_col, ascending=False)
                 
-                fig = px.pie(
-                    oi_by_exchange.head(8),  # Top 8 exchanges
-                    values=oi_col,
-                    names='exchange_name',
+                # Filter out any "All" values
+                filtered_oi_data = oi_by_exchange[oi_by_exchange['exchange_name'] != "All"]
+                
+                fig = create_pie_chart(
+                    df=filtered_oi_data,
+                    values_col=oi_col,
+                    names_col='exchange_name',
                     title=f"{asset} Open Interest by Exchange",
-                    color_discrete_map=EXCHANGE_COLORS
+                    color_map=EXCHANGE_COLORS,
+                    exclude_names=["All"],
+                    show_top_n=8,  # Show top 8 exchanges
+                    min_percent=2.0,  # Group exchanges with less than 2% share
+                    height=400
                 )
                 
-                fig.update_traces(textposition='inside', textinfo='percent+label')
-                display_chart(apply_chart_theme(fig))
+                display_chart(fig)
             else:
                 display_chart(create_fallback_chart(f"{asset} Open Interest by Exchange", "Incomplete exchange data"))
         else:
@@ -1450,8 +1464,16 @@ def main():
                     rate_col = 'close' if 'close' in filtered_funding_df.columns else 'rate' if 'rate' in filtered_funding_df.columns else 'funding_rate'
                     
                     # Ensure both dataframes have datetime as index
-                    funding_df_resampled = filtered_funding_df.set_index('datetime').resample('1D').mean()
-                    price_df_resampled = price_history_df.set_index('datetime').resample('1D').mean()
+                    # First explicitly convert any numeric columns to ensure they're not objects
+                    numeric_df = filtered_funding_df.copy()
+                    # Ensure the column is numeric before resampling
+                    numeric_df[rate_col] = pd.to_numeric(numeric_df[rate_col], errors='coerce')
+                    funding_df_resampled = numeric_df.set_index('datetime').resample('1D').mean()
+                    
+                    # Do the same for price data
+                    price_numeric_df = price_history_df.copy()
+                    price_numeric_df['close'] = pd.to_numeric(price_numeric_df['close'], errors='coerce')
+                    price_df_resampled = price_numeric_df.set_index('datetime').resample('1D').mean()
                     
                     # Merge on index
                     merged_df = pd.merge(
@@ -1989,10 +2011,6 @@ def main():
     else:
         st.info("Insufficient data available to generate market insights.")
     
-    # Add footer
-    st.markdown("---")
-    st.caption("Izun Crypto Liquidity Report © 2025")
-    st.caption("Data provided by CoinGlass API")
 
 def _test_asset_data_loading():
     """

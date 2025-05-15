@@ -45,17 +45,8 @@ def render_sidebar():
             st.sidebar.error("⚠️ Data directory not found")
             st.sidebar.info(f"Looking for data at: {DATA_BASE_PATH}")
         else:
-            # Get last updated time
-            try:
-                last_updated = get_data_last_updated()
-                if last_updated:
-                    st.sidebar.caption(f"Last updated: {format_timestamp(last_updated, '%Y-%m-%d %H:%M')}")
-                    st.sidebar.caption(f"({humanize_time_diff(last_updated)})")
-                else:
-                    st.sidebar.caption("Last updated: Unknown")
-            except Exception as e:
-                logger.error(f"Error getting last updated time: {e}")
-                st.sidebar.caption("Last updated: Error retrieving update time")
+            # Removed last updated time references
+            pass
         
         # Determine current page for conditional elements
         current_page = st.session_state.get('current_page', 'report')
@@ -65,130 +56,48 @@ def render_sidebar():
         # Set a default page to avoid further errors
         current_page = 'report'
     
-    # Asset selector for relevant pages
-    try:
-        if current_page in ['futures', 'spot', 'options', 'report']:
-            available_assets = []
-            try:
-                if current_page == 'futures':
-                    available_assets = get_available_assets_for_category('futures')
-                elif current_page == 'spot':
-                    available_assets = get_available_assets_for_category('spot')
-                elif current_page == 'options':
-                    available_assets = get_available_assets_for_category('options')
-                elif current_page == 'report':
-                    available_assets = ['BTC', 'ETH', 'SOL', 'XRP']  # Default for report page
-            except Exception as e:
-                logger.error(f"Error getting available assets: {e}")
-                # Fallback to default assets
-                available_assets = ['BTC', 'ETH', 'SOL', 'XRP']
-                st.sidebar.warning("Using default assets due to data loading error")
-            
-            # Default to BTC if available, otherwise first asset
-            default_asset = 'BTC' if 'BTC' in available_assets else (available_assets[0] if available_assets else None)
-            
-            if available_assets:
-                st.sidebar.subheader("Assets")
-                selected_asset = st.sidebar.selectbox(
-                    "Select Asset",
-                    available_assets,
-                    index=available_assets.index(default_asset) if default_asset in available_assets else 0
-                )
-                
-                # Store selected asset in session state
-                st.session_state.selected_asset = selected_asset
-            else:
-                st.sidebar.warning("No assets available for selection")
-                # Set a default asset to avoid errors
-                st.session_state.selected_asset = 'BTC'
-    except Exception as e:
-        logger.error(f"Error setting up asset selector: {e}")
-        st.sidebar.error("Error loading asset selector")
+    # Asset selector has been moved to individual pages
+    # Default to BTC to ensure backward compatibility with other parts of the code
+    if 'selected_asset' not in st.session_state:
+        st.session_state.selected_asset = 'BTC'
     
-    # Date range selector
+    # Multi-select asset functionality is now handled in each relevant page
+    if 'selected_assets' not in st.session_state:
+        st.session_state.selected_assets = ['BTC', 'ETH']
+    
+    # Time range selection has been moved to individual charts
+    # Set default time range for backward compatibility
     try:
         today = datetime.now().date()
         
-        # Set default to 3 months, with max allowed of 6 months ago
+        # Set default to 3 months
         default_days = 90  # 3 months
-        max_days = 180  # 6 months
-
-        # Adjust based on page if needed
-        if current_page == 'report':
-            default_days = 90
-        elif current_page == 'etf':
-            default_days = 90
-
         default_start_date = today - timedelta(days=default_days)
-        min_date = today - timedelta(days=max_days)
         
-        # Only show date filter for pages with time series data
-        if current_page not in ['historical']:
-            st.sidebar.subheader("Date Range")
+        # Initialize session state with default time ranges for backward compatibility
+        if 'selected_time_range' not in st.session_state:
+            st.session_state.selected_time_range = '3M'
             
-            try:
-                # Date range selector
-                col1, col2 = st.sidebar.columns(2)
-                with col1:
-                    start_date = st.date_input(
-                        "Start Date",
-                        value=default_start_date,
-                        min_value=min_date,
-                        key=f"start_date_{current_page}"
-                    )
-                with col2:
-                    end_date = st.date_input(
-                        "End Date",
-                        value=today,
-                        key=f"end_date_{current_page}"
-                    )
-                
-                # Store date range in session state
-                st.session_state.date_range = {
-                    'start': start_date,
-                    'end': end_date
-                }
-            except Exception as e:
-                logger.error(f"Error setting up date selector: {e}")
-                # Set default dates in session state to avoid errors
-                st.session_state.date_range = {
-                    'start': default_start_date,
-                    'end': today
-                }
-                st.sidebar.warning("Error loading date selector, using defaults")
+        # Set default date range in session state to avoid errors
+        st.session_state.date_range = {
+            'start': default_start_date,
+            'end': today
+        }
     except Exception as e:
-        logger.error(f"Error in date range section: {e}")
+        logger.error(f"Error initializing default time range: {e}")
         # Fall back to default date range
         st.session_state.date_range = {
-            'start': datetime.now().date() - timedelta(days=7),
+            'start': datetime.now().date() - timedelta(days=90),
             'end': datetime.now().date()
         }
     
-    # Exchange selector for relevant pages
+    # Exchange selector has been moved to individual pages
+    # Set a default for backward compatibility
     try:
-        if current_page in ['futures', 'spot', 'options']:
-            st.sidebar.subheader("Exchanges")
-            
-            # Dynamic exchange list based on the page
-            exchanges = []
-            if current_page == 'futures':
-                exchanges = ["Binance", "OKX", "Bybit", "dYdX", "Bitfinex", "All"]
-            elif current_page == 'spot':
-                exchanges = ["Binance", "Coinbase", "Kraken", "OKX", "All"]
-            elif current_page == 'options':
-                exchanges = ["Deribit", "OKX", "Binance", "All"]
-            
-            if exchanges:
-                selected_exchanges = st.sidebar.multiselect(
-                    "Select Exchanges",
-                    exchanges,
-                    default=["All"]
-                )
-                
-                # Store selected exchanges in session state
-                st.session_state.selected_exchanges = selected_exchanges
+        if 'selected_exchanges' not in st.session_state:
+            st.session_state.selected_exchanges = ["All"]
     except Exception as e:
-        logger.error(f"Error in exchange selector: {e}")
+        logger.error(f"Error initializing default exchange selection: {e}")
         # Set default exchanges in session state
         st.session_state.selected_exchanges = ["All"]
     
@@ -233,15 +142,12 @@ def render_sidebar():
         logger.error(f"Error creating navigation links: {e}")
         st.sidebar.error("Navigation links could not be loaded")
     
-    # Credits and data source information
+    # Footer
     try:
         st.sidebar.divider()
-        st.sidebar.caption("Data source: CoinGlass API")
-        st.sidebar.caption("Izun Crypto Liquidity Report © 2025")
-        
-        # Removed debug info section to clean up the sidebar
+        # Removed data source and copyright references
     except Exception as e:
-        logger.error(f"Error adding footer information: {e}")
+        logger.error(f"Error adding footer: {e}")
         # Non-critical, so don't show error to user
 
 def render_page_filters(category=None):

@@ -30,7 +30,8 @@ from components.charts import (
     create_time_series_with_bar,
     create_pie_chart,
     apply_chart_theme,
-    display_chart
+    display_chart,
+    display_filterable_chart
 )
 from components.tables import create_formatted_table, create_exchange_table
 from utils.data_loader import (
@@ -145,10 +146,41 @@ def load_futures_data(subcategory, asset):
 
     return data
 
-def render_funding_rate_page(asset):
-    """Render the funding rate page for the specified asset."""
+def render_funding_rate_page(asset, all_selected_assets=None, selected_exchanges=None, selected_time_range=None):
+    """Render the funding rate page for the specified asset and selected exchanges.
+    
+    Parameters:
+    -----------
+    asset: str
+        Primary asset to display (for backward compatibility)
+    all_selected_assets: list
+        List of all selected assets to display
+    selected_exchanges: list
+        List of exchanges to display data for
+    selected_time_range: str
+        Selected time range for filtering data
+    """
     st.header(f"{asset} Funding Rate Analysis")
-
+    
+    # Define available exchanges for funding rate
+    available_exchanges = ["Binance", "OKX", "Bybit", "dYdX", "Bitfinex", "All"]
+    
+    # Default to session state if it exists, otherwise use All
+    default_exchanges = selected_exchanges if selected_exchanges else ["All"]
+    
+    # Store the available exchanges for use with each chart
+    st.session_state.funding_rate_available_exchanges = available_exchanges
+    
+    # Ensure at least one exchange is selected
+    if not selected_exchanges:
+        selected_exchanges = ["All"]
+    
+    # Store in session state for this section
+    st.session_state.selected_funding_rate_exchanges = selected_exchanges
+    
+    # For backward compatibility
+    st.session_state.selected_exchanges = selected_exchanges
+    
     # Load funding rate data
     data = load_futures_data('funding_rate', asset)
 
@@ -187,10 +219,18 @@ def render_funding_rate_page(asset):
                 if 'symbol' in fr_df.columns and 'funding_rate' in fr_df.columns:
                     # Filter for the selected asset
                     asset_fr = fr_df[fr_df['symbol'].str.contains(asset, case=False, na=False)]
+                    
+                    # Filter by selected exchanges if needed (if not "All")
+                    if selected_exchanges and "All" not in selected_exchanges:
+                        asset_fr = asset_fr[asset_fr['exchange_name'].isin(selected_exchanges)]
                 # For normalized exchange list format
                 elif 'symbol' in fr_df.columns and 'exchange_name' in fr_df.columns:
                     # Filter for the selected asset
                     asset_fr = fr_df[fr_df['symbol'].str.contains(asset, case=False, na=False)]
+                    
+                    # Filter by selected exchanges if needed (if not "All")
+                    if selected_exchanges and "All" not in selected_exchanges:
+                        asset_fr = asset_fr[asset_fr['exchange_name'].isin(selected_exchanges)]
                 else:
                     st.warning("Funding rate data is missing required columns.")
                     st.write("Available columns:", list(fr_df.columns))
@@ -258,224 +298,72 @@ def render_funding_rate_page(asset):
 
                     # Funding rate distribution chart
                     st.subheader("Funding Rate Distribution by Exchange")
-
-                    # Create bar chart
-                    fig = px.bar(
-                        display_df,
-                        x='exchange_name',
-                        y='funding_rate',
-                        color='funding_rate',
-                        color_continuous_scale='RdBu',
-                        color_continuous_midpoint=0,
-                        title=f"{asset} Funding Rates by Exchange (%)"
-                    )
-
-                    fig.update_layout(
-                        xaxis_title=None,
-                        yaxis_title="Funding Rate (%)"
-                    )
-
-                    display_chart(apply_chart_theme(fig))
+                    
+                    try:
+                        # Store available exchanges for filter
+                        available_exchanges = sorted(display_df['exchange_name'].unique().tolist())
+                        st.session_state.funding_rate_available_exchanges = ["All"] + available_exchanges
+                        
+                        # Create a container for the chart
+                        chart_container = st.container()
+                        
+                        # Create the exchange selector above the chart
+                        exchange_filter = st.selectbox(
+                            "Select Exchange",
+                            ["All"] + available_exchanges,
+                            key=f"funding_rate_distribution_exchange_filter_{asset}"
+                        )
+                        
+                        # Filter data based on selection
+                        filtered_df = display_df
+                        if exchange_filter != "All":
+                            filtered_df = display_df[display_df['exchange_name'] == exchange_filter]
+                        
+                        # Sort by funding rate value for better visualization
+                        filtered_df = filtered_df.sort_values('funding_rate', ascending=False)
+                        
+                        # Create the chart with filtered data
+                        fig = px.bar(
+                            filtered_df,
+                            x='exchange_name',
+                            y='funding_rate',
+                            color='funding_rate',
+                            color_continuous_scale='RdBu',
+                            color_continuous_midpoint=0,
+                            title=f"{asset} Funding Rates by Exchange (%)"
+                        )
+                        
+                        # Update layout
+                        fig.update_layout(
+                            xaxis_title=None,
+                            yaxis_title="Funding Rate (%)",
+                            height=500,  # Ensure consistent height
+                            xaxis={'categoryorder':'total descending'}  # Order bars by funding rate
+                        )
+                        
+                        # Apply theme and display chart
+                        themed_fig = apply_chart_theme(fig)
+                        chart_container.plotly_chart(themed_fig, use_container_width=True)
+                        
+                        # Show number of exchanges displayed
+                        num_exchanges = len(filtered_df)
+                        if exchange_filter == "All":
+                            st.caption(f"Showing all {num_exchanges} exchanges with funding rate data")
+                        else:
+                            st.caption(f"Showing funding rate for {exchange_filter}")
+                    except Exception as e:
+                        st.error(f"Error displaying funding rate distribution: {e}")
+                        logger.error(f"Error in funding rate distribution chart: {e}")
+                    
+                    
+                    # Set defaults in session state for backward compatibility
+                    st.session_state.funding_rate_time_range = 'All'
+                    st.session_state.selected_time_range = 'All'
                 else:
                     st.info(f"No funding rate data available for {asset}.")
             except Exception as e:
                 st.error(f"Error processing funding rate data: {e}")
                 st.info("Unable to display funding rate metrics due to data format issues.")
-
-    # Funding rate history
-    history_options = [
-        "Standard History",
-        "OI Weighted History",
-        "Volume Weighted History"
-    ]
-
-    history_type = st.radio("Funding Rate History Type", history_options, horizontal=True)
-
-    if history_type == "Standard History":
-        if 'api_futures_fundingRate_ohlc_history' in data:
-            fr_history_df = data['api_futures_fundingRate_ohlc_history']
-
-            if not fr_history_df.empty:
-                try:
-                    # Process dataframe
-                    fr_history_df = process_timestamps(fr_history_df)
-
-                    # Check if required columns exist
-                    required_cols = ['datetime', 'open', 'high', 'low', 'close']
-                    if not all(col in fr_history_df.columns for col in required_cols):
-                        st.warning("Funding rate history data is missing required columns for OHLC chart.")
-                    else:
-                        # Convert funding rates from decimal to percentage
-                        for col in ['open', 'high', 'low', 'close']:
-                            fr_history_df[col] = fr_history_df[col] * 100
-
-                        # Create OHLC chart
-                        st.subheader("Funding Rate History")
-
-                        fig = create_ohlc_chart(
-                            fr_history_df,
-                            'datetime',
-                            'open',
-                            'high',
-                            'low',
-                            'close',
-                            f"{asset} Funding Rate History (%)"
-                        )
-
-                        # Add zero line
-                        fig.add_hline(
-                            y=0,
-                            line_dash="dash",
-                            line_color="gray",
-                            annotation_text="Zero"
-                        )
-
-                        display_chart(fig)
-                except Exception as e:
-                    st.error(f"Error processing funding rate history: {e}")
-                    st.info("Unable to display funding rate history chart due to data format issues.")
-            else:
-                st.info("No funding rate history data available.")
-        else:
-            st.info("No funding rate history data available.")
-
-    elif history_type == "OI Weighted History":
-        # Try different possible key formats
-        possible_keys = [
-            f"api_futures_fundingRate_oi_weight_ohlc_history_{asset}_{asset}",
-            f"api_futures_fundingRate_oi_weight_ohlc_history_{asset}",
-            "api_futures_fundingRate_oi_weight_ohlc_history_BTC", # Some files use BTC format for all assets
-            "api_futures_fundingRate_oi_weight_ohlc_history_ETH",
-            "api_futures_fundingRate_oi_weight_ohlc_history_SOL",
-            "api_futures_fundingRate_oi_weight_ohlc_history_XRP"
-        ]
-
-        oi_fr_df = None
-        oi_weighted_key = None
-
-        for key in possible_keys:
-            if key in data and not data[key].empty:
-                oi_fr_df = data[key]
-                oi_weighted_key = key
-                break
-
-        if oi_fr_df is not None:
-            try:
-                # Handle time column if it exists instead of datetime
-                if 'time' in oi_fr_df.columns and 'datetime' not in oi_fr_df.columns:
-                    # Convert time column to datetime
-                    oi_fr_df['datetime'] = pd.to_datetime(oi_fr_df['time'], unit='ms')
-                else:
-                    # Process dataframe normally
-                    oi_fr_df = process_timestamps(oi_fr_df)
-
-                # Check if required columns exist
-                required_cols = ['datetime', 'open', 'high', 'low', 'close']
-                if not all(col in oi_fr_df.columns for col in required_cols):
-                    # Log the available columns for troubleshooting
-                    st.warning(f"OI-weighted funding rate data is missing required columns for OHLC chart. Available columns: {oi_fr_df.columns.tolist()}")
-                else:
-                    # Convert funding rates from decimal to percentage
-                    for col in ['open', 'high', 'low', 'close']:
-                        oi_fr_df[col] = oi_fr_df[col] * 100
-
-                    # Create OHLC chart
-                    st.subheader("OI-Weighted Funding Rate History")
-
-                    fig = create_ohlc_chart(
-                        oi_fr_df,
-                        'datetime',
-                        'open',
-                        'high',
-                        'low',
-                        'close',
-                        f"{asset} OI-Weighted Funding Rate History (%)"
-                    )
-
-                    # Add zero line
-                    fig.add_hline(
-                        y=0,
-                        line_dash="dash",
-                        line_color="gray",
-                        annotation_text="Zero"
-                    )
-
-                    display_chart(fig)
-            except Exception as e:
-                st.error(f"Error processing OI-weighted funding rate history: {e}")
-                logger.error(f"OI-weighted funding rate error: {e}")
-                st.info("Unable to display OI-weighted funding rate history chart due to data format issues.")
-        else:
-            st.info("No OI-weighted funding rate history data available.")
-
-    elif history_type == "Volume Weighted History":
-        # Try different possible key formats
-        possible_keys = [
-            f"api_futures_fundingRate_vol_weight_ohlc_history_{asset}_{asset}",
-            f"api_futures_fundingRate_vol_weight_ohlc_history_{asset}",
-            "api_futures_fundingRate_vol_weight_ohlc_history_BTC", # Some files use BTC format for all assets
-            "api_futures_fundingRate_vol_weight_ohlc_history_ETH",
-            "api_futures_fundingRate_vol_weight_ohlc_history_SOL",
-            "api_futures_fundingRate_vol_weight_ohlc_history_XRP"
-        ]
-
-        vol_fr_df = None
-        vol_weighted_key = None
-
-        for key in possible_keys:
-            if key in data and not data[key].empty:
-                vol_fr_df = data[key]
-                vol_weighted_key = key
-                break
-
-        if vol_fr_df is not None:
-            try:
-                # Handle time column if it exists instead of datetime
-                if 'time' in vol_fr_df.columns and 'datetime' not in vol_fr_df.columns:
-                    # Convert time column to datetime
-                    vol_fr_df['datetime'] = pd.to_datetime(vol_fr_df['time'], unit='ms')
-                else:
-                    # Process dataframe normally
-                    vol_fr_df = process_timestamps(vol_fr_df)
-
-                # Check if required columns exist
-                required_cols = ['datetime', 'open', 'high', 'low', 'close']
-                if not all(col in vol_fr_df.columns for col in required_cols):
-                    # Log the available columns for troubleshooting
-                    st.warning(f"Volume-weighted funding rate data is missing required columns for OHLC chart. Available columns: {vol_fr_df.columns.tolist()}")
-                else:
-                    # Convert funding rates from decimal to percentage
-                    for col in ['open', 'high', 'low', 'close']:
-                        vol_fr_df[col] = vol_fr_df[col] * 100
-
-                    # Create OHLC chart
-                    st.subheader("Volume-Weighted Funding Rate History")
-
-                    fig = create_ohlc_chart(
-                        vol_fr_df,
-                        'datetime',
-                        'open',
-                        'high',
-                        'low',
-                        'close',
-                        f"{asset} Volume-Weighted Funding Rate History (%)"
-                    )
-
-                    # Add zero line
-                    fig.add_hline(
-                        y=0,
-                        line_dash="dash",
-                        line_color="gray",
-                        annotation_text="Zero"
-                    )
-
-                    display_chart(fig)
-            except Exception as e:
-                st.error(f"Error processing volume-weighted funding rate history: {e}")
-                logger.error(f"Volume-weighted funding rate error: {e}")
-                st.info("Unable to display volume-weighted funding rate history chart due to data format issues.")
-        else:
-            st.info("No volume-weighted funding rate history data available.")
 
     # Funding rate arbitrage if available
     if 'api_futures_fundingRate_arbitrage' in data:
@@ -523,10 +411,41 @@ def render_funding_rate_page(asset):
         else:
             st.info("No funding rate arbitrage data available.")
 
-def render_liquidation_page(asset):
-    """Render the liquidation page for the specified asset."""
+def render_liquidation_page(asset, all_selected_assets=None, selected_exchanges=None, selected_time_range=None):
+    """Render the liquidation page for the specified asset and selected exchanges.
+    
+    Parameters:
+    -----------
+    asset: str
+        Primary asset to display (for backward compatibility)
+    all_selected_assets: list
+        List of all selected assets to display
+    selected_exchanges: list
+        List of exchanges to display data for
+    selected_time_range: str
+        Selected time range for filtering data
+    """
     st.header(f"{asset} Liquidation Analysis")
-
+    
+    # Define available exchanges for liquidation
+    available_exchanges = ["Binance", "OKX", "Bybit", "dYdX", "Bitfinex", "All"]
+    
+    # Default to session state if it exists, otherwise use All
+    default_exchanges = selected_exchanges if selected_exchanges else ["All"]
+    
+    # Store the available exchanges for use with each chart
+    st.session_state.liquidation_available_exchanges = available_exchanges
+    
+    # Ensure at least one exchange is selected
+    if not selected_exchanges:
+        selected_exchanges = ["All"]
+    
+    # Store in session state for this section
+    st.session_state.selected_liquidation_exchanges = selected_exchanges
+    
+    # For backward compatibility
+    st.session_state.selected_exchanges = selected_exchanges
+    
     # Load liquidation data
     data = load_futures_data('liquidation', asset)
 
@@ -659,6 +578,11 @@ def render_liquidation_page(asset):
                 )
 
                 display_chart(apply_chart_theme(fig))
+                
+                
+                # Set defaults in session state for backward compatibility
+                st.session_state.liquidation_time_range = 'All'
+                st.session_state.selected_time_range = 'All'
 
                 # Add long/short ratio chart
                 st.subheader("Long/Short Liquidation Ratio")
@@ -683,6 +607,11 @@ def render_liquidation_page(asset):
                 )
 
                 display_chart(apply_chart_theme(fig))
+                
+                
+                # Set defaults in session state for backward compatibility
+                st.session_state.liquidation_ratio_time_range = 'All'
+                st.session_state.selected_time_range = 'All'
             else:
                 st.warning("No recent liquidation data found in the dataset.")
         except Exception as e:
@@ -707,7 +636,7 @@ def render_liquidation_page(asset):
             # If it's a generic format, filter for the specific asset
             if key == "api_futures_liquidation_exchange_list" and 'symbol' in exchange_liq_df.columns:
                 exchange_liq_df = exchange_liq_df[exchange_liq_df['symbol'].str.contains(asset, case=False, na=False)]
-
+            
             logger.info(f"Found exchange liquidation data using key: {key}")
             break
 
@@ -739,6 +668,10 @@ def render_liquidation_page(asset):
             # Calculate total if it doesn't exist
             if 'total_liquidation_usd' not in exchange_liq_df.columns and 'long_liquidation_usd' in exchange_liq_df.columns and 'short_liquidation_usd' in exchange_liq_df.columns:
                 exchange_liq_df['total_liquidation_usd'] = exchange_liq_df['long_liquidation_usd'] + exchange_liq_df['short_liquidation_usd']
+                
+            # Filter by selected exchanges if needed (if not "All")
+            if 'exchange_name' in exchange_liq_df.columns and selected_exchanges and "All" not in selected_exchanges:
+                exchange_liq_df = exchange_liq_df[exchange_liq_df['exchange_name'].isin(selected_exchanges)]
 
             # Check if we have the required columns now
             required_cols = ['exchange_name', 'total_liquidation_usd', 'long_liquidation_usd', 'short_liquidation_usd']
@@ -756,16 +689,21 @@ def render_liquidation_page(asset):
                     }
                 )
 
-                # Create pie chart for liquidation distribution
-                fig = create_pie_chart(
+                # Create pie chart for liquidation distribution using enhanced version
+                from utils.chart_utils import create_enhanced_pie_chart
+                
+                fig = create_enhanced_pie_chart(
                     exchange_liq_df.head(10),  # Top 10 exchanges
                     'total_liquidation_usd',
                     'exchange_name',
-                    f"{asset} Liquidations Distribution by Exchange"
+                    f"{asset} Liquidations Distribution by Exchange",
+                    show_top_n=8,  # Show top 8 exchanges
+                    min_percent=2.0  # Group exchanges with less than 2% share
                 )
 
                 display_chart(fig)
 
+                
                 # Create stacked bar chart showing long vs short by exchange
                 st.subheader("Long vs. Short Liquidations by Exchange")
 
@@ -887,9 +825,49 @@ def render_liquidation_page(asset):
     else:
         st.info("No liquidation order data available.")
 
-def render_open_interest_page(asset):
-    """Render the open interest page for the specified asset."""
+def render_open_interest_page(asset, all_selected_assets=None, selected_exchanges=None, selected_time_range=None):
+    """Render the open interest page for the specified asset and selected exchanges.
+    
+    Parameters:
+    -----------
+    asset: str
+        Primary asset to display (for backward compatibility)
+    all_selected_assets: list
+        List of all selected assets to display
+    selected_exchanges: list
+        List of exchanges to display data for
+    selected_time_range: str
+        Selected time range for filtering data
+    """
     st.header(f"{asset} Open Interest Analysis")
+    
+    # Exchange selector
+    # Define available exchanges for open interest
+    available_exchanges = ["Binance", "OKX", "Bybit", "dYdX", "Bitfinex", "All"]
+    
+    # Default to session state if it exists, otherwise use All
+    default_exchanges = selected_exchanges if selected_exchanges else ["All"]
+    
+    # Add exchange selector
+    exchange_col1, exchange_col2 = st.columns([3, 1])
+    with exchange_col1:
+        selected_exchanges = st.multiselect(
+            "Select Exchanges to Display",
+            available_exchanges,
+            default=default_exchanges,
+            key=f"open_interest_exchange_selector_{asset}"
+        )
+    
+    # Ensure at least one exchange is selected
+    if not selected_exchanges:
+        selected_exchanges = ["All"]
+        st.warning("At least one exchange must be selected. Defaulting to 'All'.")
+    
+    # Store in session state for this section
+    st.session_state.selected_oi_exchanges = selected_exchanges
+    
+    # For backward compatibility
+    st.session_state.selected_exchanges = selected_exchanges
     
     # Load open interest data
     data = load_futures_data('open_interest', asset)
@@ -930,6 +908,10 @@ def render_open_interest_page(asset):
         # Apply renaming if needed
         if column_mapping:
             oi_exchange_df = oi_exchange_df.rename(columns=column_mapping)
+            
+        # Filter by selected exchanges if needed (if not "All")
+        if 'exchange_name' in oi_exchange_df.columns and selected_exchanges and "All" not in selected_exchanges:
+            oi_exchange_df = oi_exchange_df[oi_exchange_df['exchange_name'].isin(selected_exchanges)]
 
         # Calculate metrics
         if 'open_interest_usd' in oi_exchange_df.columns:
@@ -986,20 +968,30 @@ def render_open_interest_page(asset):
                 format_dict=format_dict
             )
 
-            # Create pie chart for open interest distribution
-            fig = create_pie_chart(
+            # Create pie chart for open interest distribution using enhanced version
+            from utils.chart_utils import create_enhanced_pie_chart
+            
+            fig = create_enhanced_pie_chart(
                 oi_exchange_df.head(10),  # Top 10 exchanges
                 'open_interest_usd',
                 'exchange_name',
-                f"{asset} Open Interest Distribution by Exchange"
+                f"{asset} Open Interest Distribution by Exchange",
+                show_top_n=8,  # Show top 8 exchanges
+                min_percent=2.0  # Group exchanges with less than 2% share
             )
             
             display_chart(fig)
+            
     else:
         st.info(f"No exchange open interest data available for {asset}.")
     
     # Open interest history
     st.subheader(f"{asset} Open Interest History")
+    
+    
+    # Set defaults in session state for backward compatibility
+    st.session_state.oi_time_range = 'All'
+    st.session_state.selected_time_range = 'All'
 
     oi_type = st.radio(
         "Open Interest Type",
@@ -1059,6 +1051,11 @@ def render_open_interest_page(asset):
             )
 
             display_chart(fig)
+            
+            
+            # Set defaults in session state for backward compatibility
+            st.session_state.oi_history_time_range = 'All'
+            st.session_state.selected_time_range = 'All'
 
             # Add price overlay if available
             if 'api_price_ohlc_history' in data.get('market', {}):
@@ -1176,6 +1173,10 @@ def render_open_interest_page(asset):
             # Apply column renaming if needed
             if column_mapping:
                 oi_exchange_history_df = oi_exchange_history_df.rename(columns=column_mapping)
+                
+            # Filter by selected exchanges if needed (if not "All")
+            if 'exchange_name' in oi_exchange_history_df.columns and selected_exchanges and "All" not in selected_exchanges:
+                oi_exchange_history_df = oi_exchange_history_df[oi_exchange_history_df['exchange_name'].isin(selected_exchanges)]
 
             # Recheck required columns after potential renaming
             if all(col in oi_exchange_history_df.columns for col in required_cols):
@@ -1199,6 +1200,11 @@ def render_open_interest_page(asset):
                         )
 
                         display_chart(apply_chart_theme(fig))
+                        
+                        
+                        # Set defaults in session state for backward compatibility
+                        st.session_state.oi_exchange_history_time_range = 'All'
+                        st.session_state.selected_time_range = 'All'
                     else:
                         st.warning("No exchange data available after pivoting")
                 except Exception as e:
@@ -1213,1041 +1219,50 @@ def render_open_interest_page(asset):
     else:
         st.info(f"No open interest history by exchange data available for {asset}.")
 
-def render_long_short_ratio_page(asset):
-    """Render the long/short ratio page for the specified asset."""
-    st.header(f"{asset} Long/Short Ratio Analysis")
-
-    # Load long/short ratio data
-    data = load_futures_data('long_short_ratio', asset)
-
-    if not data:
-        st.info(f"No long/short ratio data available for {asset}. Long/short ratio shows the balance between long and short positions in the market.")
-
-        # Show empty placeholder layout
-        col1, col2, col3 = st.columns(3)
-        with col1:
-            st.metric("Buy Volume", "$0")
-        with col2:
-            st.metric("Sell Volume", "$0")
-        with col3:
-            st.metric("Buy/Sell Ratio", "0.00")
-
-        st.subheader(f"{asset} Taker Buy/Sell by Exchange")
-        st.info("No taker buy/sell data available. This section would show the buy/sell volumes and ratios across different exchanges.")
-        return
-
-    # Display tabs for different ratio types
-    tab1, tab2, tab3 = st.tabs([
-        "Taker Buy/Sell Ratio",
-        "Account Ratio",
-        "Position Ratio"
-    ])
-
-    with tab1:
-        # Taker buy/sell volume by exchange - try multiple possible key formats
-        taker_exchange_df = None
-        possible_exchange_keys = [
-            f"api_futures_taker_buy_sell_volume_exchange_list_{asset}_{asset}",  # Double asset format
-            f"api_futures_taker_buy_sell_volume_exchange_list_{asset}",          # Single asset format
-            "api_futures_taker_buy_sell_volume_exchange_list"                    # Generic format
-        ]
-
-        # Try each key format until we find data
-        for key in possible_exchange_keys:
-            if key in data and not data[key].empty:
-                taker_exchange_df = data[key]
-
-                # If it's a generic format, filter for the specific asset
-                if key == "api_futures_taker_buy_sell_volume_exchange_list" and 'symbol' in taker_exchange_df.columns:
-                    taker_exchange_df = taker_exchange_df[taker_exchange_df['symbol'].str.contains(asset, case=False, na=False)]
-
-                logger.info(f"Found taker buy/sell exchange data using key: {key}")
-                break
-
-        if taker_exchange_df is not None and not taker_exchange_df.empty:
-            try:
-                # Check column names and map if needed
-                column_mapping = {}
-
-                # Check for different column naming patterns
-                if 'exchange' in taker_exchange_df.columns and 'exchange_name' not in taker_exchange_df.columns:
-                    column_mapping['exchange'] = 'exchange_name'
-
-                if 'buy_vol_usd' in taker_exchange_df.columns and 'buy_volume' not in taker_exchange_df.columns:
-                    column_mapping['buy_vol_usd'] = 'buy_volume'
-
-                if 'sell_vol_usd' in taker_exchange_df.columns and 'sell_volume' not in taker_exchange_df.columns:
-                    column_mapping['sell_vol_usd'] = 'sell_volume'
-
-                if 'buy_ratio' in taker_exchange_df.columns and 'buy_sell_ratio' not in taker_exchange_df.columns:
-                    # In some formats, we may need to calculate the ratio
-                    if 'sell_ratio' in taker_exchange_df.columns:
-                        taker_exchange_df['buy_sell_ratio'] = taker_exchange_df['buy_ratio'] / taker_exchange_df['sell_ratio'].replace(0, float('nan'))
-
-                # Handle nested exchange_list data if present
-                if 'exchange_list' in taker_exchange_df.columns:
-                    try:
-                        logger.info("Found nested exchange_list data, attempting to extract")
-
-                        # Extract exchange-specific data from the nested list
-                        exchanges_data = []
-                        for idx, row in taker_exchange_df.iterrows():
-                            exchange_list = row.get('exchange_list')
-
-                            # If exchange_list is NaN, skip
-                            if pd.isna(exchange_list):
-                                continue
-
-                            # Handle numpy arrays
-                            if hasattr(exchange_list, '__array__'):
-                                try:
-                                    exchange_list = exchange_list.tolist()
-                                except Exception as e_convert:
-                                    logger.warning(f"Could not convert exchange_list to list: {e_convert}")
-                                    continue
-
-                            # Process list of exchange data
-                            if isinstance(exchange_list, list):
-                                for exchange_data in exchange_list:
-                                    if isinstance(exchange_data, dict):
-                                        exchange_item = {
-                                            'symbol': row.get('symbol', ''),
-                                            'exchange_name': exchange_data.get('exchange', '')
-                                        }
-
-                                        # Map buy/sell volumes and ratio
-                                        if 'buy_vol' in exchange_data:
-                                            exchange_item['buy_volume'] = exchange_data['buy_vol']
-
-                                        if 'sell_vol' in exchange_data:
-                                            exchange_item['sell_volume'] = exchange_data['sell_vol']
-
-                                        if 'buy_vol' in exchange_data and 'sell_vol' in exchange_data and exchange_data['sell_vol'] != 0:
-                                            exchange_item['buy_sell_ratio'] = exchange_data['buy_vol'] / exchange_data['sell_vol']
-
-                                        exchanges_data.append(exchange_item)
-
-                        # If we extracted data successfully, replace the original dataframe
-                        if exchanges_data:
-                            taker_exchange_df = pd.DataFrame(exchanges_data)
-                            logger.info(f"Successfully extracted exchange data from nested list: {len(taker_exchange_df)} rows")
-                    except Exception as e:
-                        logger.error(f"Error processing nested exchange_list: {e}")
-
-                # Apply column renaming if needed
-                if column_mapping:
-                    taker_exchange_df = taker_exchange_df.rename(columns=column_mapping)
-
-                # If exchange_name is missing but we have exchange_list, create exchange_name from it
-                if 'exchange_name' not in taker_exchange_df.columns and 'exchange_list' in taker_exchange_df.columns:
-                    try:
-                        # Add an exchange_name column based on the exchange_list data
-                        taker_exchange_df = taker_exchange_df.copy()  # Create a copy to avoid SettingWithCopyWarning
-
-                        # For each row, extract exchange name from exchange_list if it's a dictionary
-                        exchange_names = []
-                        for i, row in taker_exchange_df.iterrows():
-                            if isinstance(row['exchange_list'], dict) and 'exchange' in row['exchange_list']:
-                                exchange_names.append(row['exchange_list']['exchange'])
-                            else:
-                                exchange_names.append("All Exchanges")
-
-                        taker_exchange_df['exchange_name'] = exchange_names
-                        logger.info("Added exchange_name from exchange_list dictionary data")
-                    except Exception as e:
-                        logger.error(f"Error adding exchange_name from exchange_list: {e}")
-                        taker_exchange_df['exchange_name'] = "All Exchanges"  # Default value
-
-                # Map buy/sell volume columns if needed
-                if 'buy_volume' not in taker_exchange_df.columns:
-                    if 'buy_vol_usd' in taker_exchange_df.columns:
-                        taker_exchange_df['buy_volume'] = taker_exchange_df['buy_vol_usd']
-                    elif 'buy_vol' in taker_exchange_df.columns:
-                        taker_exchange_df['buy_volume'] = taker_exchange_df['buy_vol']
-
-                if 'sell_volume' not in taker_exchange_df.columns:
-                    if 'sell_vol_usd' in taker_exchange_df.columns:
-                        taker_exchange_df['sell_volume'] = taker_exchange_df['sell_vol_usd']
-                    elif 'sell_vol' in taker_exchange_df.columns:
-                        taker_exchange_df['sell_volume'] = taker_exchange_df['sell_vol']
-
-                # Check if we have the required columns now
-                required_cols = ['exchange_name', 'buy_volume', 'sell_volume']
-                missing_cols = [col for col in required_cols if col not in taker_exchange_df.columns]
-
-                if missing_cols:
-                    st.warning(f"Taker buy/sell data is missing required columns: {missing_cols}. Available columns: {list(taker_exchange_df.columns)}")
-                else:
-                    # Calculate buy_sell_ratio if it doesn't exist
-                    if 'buy_sell_ratio' not in taker_exchange_df.columns:
-                        taker_exchange_df['buy_sell_ratio'] = taker_exchange_df['buy_volume'] / taker_exchange_df['sell_volume'].replace(0, float('nan'))
-
-                    # Calculate metrics
-                    total_buy = taker_exchange_df['buy_volume'].sum()
-                    total_sell = taker_exchange_df['sell_volume'].sum()
-                    total_ratio = total_buy / total_sell if total_sell != 0 else None
-
-                    metrics = {
-                        "Buy Volume": {
-                            "value": total_buy,
-                            "delta": None
-                        },
-                        "Sell Volume": {
-                            "value": total_sell,
-                            "delta": None
-                        },
-                        "Buy/Sell Ratio": {
-                            "value": total_ratio,
-                            "delta": None
-                        }
-                    }
-
-                    formatters = {
-                        "Buy Volume": lambda x: format_currency(x, abbreviate=True),
-                        "Sell Volume": lambda x: format_currency(x, abbreviate=True),
-                        "Buy/Sell Ratio": lambda x: f"{x:.4f}" if x is not None else "N/A"
-                    }
-
-                    display_metrics_row(metrics, formatters)
-
-                    # Taker buy/sell by exchange
-                    st.subheader(f"{asset} Taker Buy/Sell by Exchange")
-
-                    # Sort by volume
-                    taker_exchange_df['total_volume'] = taker_exchange_df['buy_volume'] + taker_exchange_df['sell_volume']
-                    taker_exchange_df = taker_exchange_df.sort_values(by='total_volume', ascending=False)
-
-                    # Create table
-                    display_columns = ['exchange_name', 'buy_volume', 'sell_volume', 'buy_sell_ratio']
-                    display_df = taker_exchange_df[display_columns].copy()
-
-                    create_formatted_table(
-                        display_df,
-                        format_dict={
-                            'buy_volume': lambda x: format_currency(x, abbreviate=True),
-                            'sell_volume': lambda x: format_currency(x, abbreviate=True),
-                            'buy_sell_ratio': lambda x: f"{x:.4f}" if pd.notna(x) else "N/A"
-                        }
-                    )
-
-                    # Create bar chart for buy/sell ratio by exchange
-                    fig = px.bar(
-                        taker_exchange_df.head(10),  # Top 10 exchanges
-                        x='exchange_name',
-                        y='buy_sell_ratio',
-                        title=f"{asset} Buy/Sell Ratio by Exchange",
-                        color='buy_sell_ratio',
-                        color_continuous_scale='RdYlGn',
-                        color_continuous_midpoint=1
-                    )
-
-                    # Add reference line at 1 (equal buy and sell)
-                    fig.add_hline(
-                        y=1,
-                        line_dash="dash",
-                        line_color="gray",
-                        annotation_text="Equal"
-                    )
-
-                    display_chart(apply_chart_theme(fig))
-            except Exception as e:
-                logger.error(f"Error processing taker buy/sell exchange data: {e}")
-                st.error(f"Error processing taker buy/sell data: {e}")
-        else:
-            st.info(f"No taker buy/sell data by exchange available for {asset}.")
-
-        # Taker buy/sell volume history - try multiple possible key formats
-        taker_history_df = None
-        possible_history_keys = [
-            f"api_futures_taker_buy_sell_volume_history_{asset}_{asset}",  # Double asset format
-            f"api_futures_taker_buy_sell_volume_history_{asset}",          # Single asset format
-            "api_futures_taker_buy_sell_volume_history"                    # Generic format
-        ]
-
-        # Try each key format until we find data
-        for key in possible_history_keys:
-            if key in data and not data[key].empty:
-                taker_history_df = data[key]
-
-                # If it's a generic format, filter for the specific asset
-                if key == "api_futures_taker_buy_sell_volume_history" and 'symbol' in taker_history_df.columns:
-                    taker_history_df = taker_history_df[taker_history_df['symbol'].str.contains(asset, case=False, na=False)]
-
-                logger.info(f"Found taker buy/sell history data using key: {key}")
-                break
-
-        if taker_history_df is not None and not taker_history_df.empty:
-            try:
-                # Process dataframe
-                taker_history_df = process_timestamps(taker_history_df)
-
-                # Check column names and map if needed
-                column_mapping = {}
-
-                # Check for different column naming patterns
-                if 'taker_buy_volume_usd' in taker_history_df.columns and 'buy_volume' not in taker_history_df.columns:
-                    column_mapping['taker_buy_volume_usd'] = 'buy_volume'
-
-                if 'taker_sell_volume_usd' in taker_history_df.columns and 'sell_volume' not in taker_history_df.columns:
-                    column_mapping['taker_sell_volume_usd'] = 'sell_volume'
-
-                # Apply column renaming if needed
-                if column_mapping:
-                    taker_history_df = taker_history_df.rename(columns=column_mapping)
-
-                # Map additional columns if needed (check for all potential variants)
-                if 'buy_volume' not in taker_history_df.columns:
-                    if 'buy_vol_usd' in taker_history_df.columns:
-                        taker_history_df['buy_volume'] = taker_history_df['buy_vol_usd']
-
-                if 'sell_volume' not in taker_history_df.columns:
-                    if 'sell_vol_usd' in taker_history_df.columns:
-                        taker_history_df['sell_volume'] = taker_history_df['sell_vol_usd']
-
-                # Calculate buy_sell_ratio if it doesn't exist
-                if 'buy_sell_ratio' not in taker_history_df.columns and 'buy_volume' in taker_history_df.columns and 'sell_volume' in taker_history_df.columns:
-                    taker_history_df['buy_sell_ratio'] = taker_history_df['buy_volume'] / taker_history_df['sell_volume'].replace(0, float('nan'))
-
-                # Check if we have the required columns now
-                required_cols = ['datetime', 'buy_volume', 'sell_volume']
-                missing_cols = [col for col in required_cols if col not in taker_history_df.columns]
-
-                if missing_cols:
-                    st.warning(f"Taker buy/sell history data is missing required columns: {missing_cols}. Available columns: {list(taker_history_df.columns)}")
-                else:
-                    # Create stacked bar chart for buy/sell volume
-                    st.subheader(f"{asset} Taker Buy/Sell Volume History")
-
-                    fig = go.Figure()
-
-                    fig.add_trace(go.Bar(
-                        x=taker_history_df['datetime'],
-                        y=taker_history_df['buy_volume'],
-                        name='Buy Volume',
-                        marker_color='green'
-                    ))
-
-                    fig.add_trace(go.Bar(
-                        x=taker_history_df['datetime'],
-                        y=taker_history_df['sell_volume'],
-                        name='Sell Volume',
-                        marker_color='red'
-                    ))
-
-                    # Update layout
-                    fig.update_layout(
-                        title=f"{asset} Taker Buy/Sell Volume History",
-                        barmode='group',
-                        xaxis_title=None,
-                        yaxis_title="Volume (USD)",
-                        hovermode="x unified"
-                    )
-
-                    display_chart(apply_chart_theme(fig))
-
-                    if 'buy_sell_ratio' in taker_history_df.columns:
-                        # Create buy/sell ratio chart
-                        st.subheader(f"{asset} Buy/Sell Ratio History")
-
-                        fig = px.line(
-                            taker_history_df,
-                            x='datetime',
-                            y='buy_sell_ratio',
-                            title=f"{asset} Taker Buy/Sell Ratio History"
-                        )
-
-                        # Add reference line at 1 (equal buy and sell)
-                        fig.add_hline(
-                            y=1,
-                            line_dash="dash",
-                            line_color="gray",
-                            annotation_text="Equal"
-                        )
-
-                        # Add price overlay if available
-                        if 'price' in taker_history_df.columns:
-                            fig.add_trace(
-                                go.Scatter(
-                                    x=taker_history_df['datetime'],
-                                    y=taker_history_df['price'],
-                                    name='Price',
-                                    yaxis="y2",
-                                    line=dict(color=ASSET_COLORS.get(asset, '#FF9900'))
-                                )
-                            )
-
-                            fig.update_layout(
-                                yaxis2=dict(
-                                    title="Price (USD)",
-                                    overlaying="y",
-                                    side="right"
-                                )
-                            )
-
-                        display_chart(apply_chart_theme(fig))
-            except Exception as e:
-                logger.error(f"Error processing taker buy/sell history data: {e}")
-                st.error(f"Error processing taker buy/sell history: {e}")
-        else:
-            st.info(f"No taker buy/sell volume history data available for {asset}.")
-
-    with tab2:
-        # Top traders long/short account ratio - try multiple possible key formats
-        account_ratio_df = None
-        possible_account_keys = [
-            'api_futures_top_long_short_account_ratio_history',
-            f'api_futures_top_long_short_account_ratio_history_{asset}',
-            'api_futures_top_account_ratio_history'
-        ]
-
-        # Try each key format until we find data
-        for key in possible_account_keys:
-            if key in data and not data[key].empty:
-                account_ratio_df = data[key]
-                logger.info(f"Found account ratio data using key: {key}")
-                break
-
-        if account_ratio_df is not None and not account_ratio_df.empty:
-            try:
-                # Process timestamps (ensuring epoch timestamp in milliseconds is handled correctly)
-                if 'time' in account_ratio_df.columns and 'datetime' not in account_ratio_df.columns:
-                    # Direct conversion of epoch milliseconds to datetime
-                    account_ratio_df['datetime'] = pd.to_datetime(account_ratio_df['time'], unit='ms')
-                    logger.info(f"Converted 'time' column directly to datetime for account ratio data")
-                else:
-                    # Process timestamps using the standard function as fallback
-                    account_ratio_df = process_timestamps(account_ratio_df)
-                    logger.info(f"Used process_timestamps for account ratio data")
-
-                # Check column names and map if needed
-                column_mapping = {}
-
-                # Check for different column naming patterns
-                if 'top_account_long_short_ratio' in account_ratio_df.columns and 'long_short_ratio' not in account_ratio_df.columns:
-                    column_mapping['top_account_long_short_ratio'] = 'long_short_ratio'
-
-                # Apply column renaming if needed
-                if column_mapping:
-                    account_ratio_df = account_ratio_df.rename(columns=column_mapping)
-
-                # Make sure percent columns are properly processed
-                if 'top_account_long_percent' in account_ratio_df.columns:
-                    # Convert to float if not already
-                    account_ratio_df['top_account_long_percent'] = account_ratio_df['top_account_long_percent'].astype(float)
-                    
-                if 'top_account_short_percent' in account_ratio_df.columns:
-                    # Convert to float if not already
-                    account_ratio_df['top_account_short_percent'] = account_ratio_df['top_account_short_percent'].astype(float)
-
-                # Calculate ratio if it doesn't exist but we have the components
-                if 'long_short_ratio' not in account_ratio_df.columns and 'top_account_long_percent' in account_ratio_df.columns and 'top_account_short_percent' in account_ratio_df.columns:
-                    account_ratio_df['long_short_ratio'] = account_ratio_df['top_account_long_percent'] / account_ratio_df['top_account_short_percent'].replace(0, float('nan'))
-                
-                # If we have a ratio column, make sure it's properly processed
-                if 'long_short_ratio' in account_ratio_df.columns or 'top_account_long_short_ratio' in account_ratio_df.columns:
-                    ratio_col = 'long_short_ratio' if 'long_short_ratio' in account_ratio_df.columns else 'top_account_long_short_ratio'
-                    # Convert to float if not already
-                    account_ratio_df[ratio_col] = account_ratio_df[ratio_col].astype(float)
-
-                # Create metrics for account ratio
-                if 'top_account_long_percent' in account_ratio_df.columns and 'top_account_short_percent' in account_ratio_df.columns:
-                    # Get the most recent values
-                    latest_data = account_ratio_df.iloc[-1]
-                    
-                    long_percent = latest_data.get('top_account_long_percent', 0)
-                    short_percent = latest_data.get('top_account_short_percent', 0)
-                    ratio = latest_data.get('long_short_ratio', 0)
-                    
-                    metrics = {
-                        "Long %": {
-                            "value": long_percent,
-                            "delta": None,
-                            "delta_suffix": "%"
-                        },
-                        "Short %": {
-                            "value": short_percent,
-                            "delta": None,
-                            "delta_suffix": "%"
-                        },
-                        "Long/Short Ratio": {
-                            "value": ratio,
-                            "delta": None
-                        }
-                    }
-                    
-                    formatters = {
-                        "Long %": lambda x: f"{x:.2f}%",
-                        "Short %": lambda x: f"{x:.2f}%",
-                        "Long/Short Ratio": lambda x: f"{x:.4f}" if pd.notna(x) else "N/A"
-                    }
-                    
-                    display_metrics_row(metrics, formatters)
-
-                # Check if we have the required columns now
-                if 'datetime' in account_ratio_df.columns:
-                    ratio_available = False
-                    
-                    # Try different ratio column names
-                    if 'long_short_ratio' in account_ratio_df.columns:
-                        ratio_col = 'long_short_ratio'
-                        ratio_available = True
-                    elif 'top_account_long_short_ratio' in account_ratio_df.columns:
-                        ratio_col = 'top_account_long_short_ratio'
-                        ratio_available = True
-                    
-                    # If neither column exists but we have long and short percentages, create ratio
-                    elif 'top_account_long_percent' in account_ratio_df.columns and 'top_account_short_percent' in account_ratio_df.columns:
-                        account_ratio_df['long_short_ratio'] = account_ratio_df['top_account_long_percent'] / account_ratio_df['top_account_short_percent'].replace(0, float('nan'))
-                        ratio_col = 'long_short_ratio'
-                        ratio_available = True
-                    
-                    if ratio_available:
-                        # Create chart
-                        st.subheader("Top Traders Long/Short Account Ratio")
-                        
-                        # Drop NaN values to prevent chart errors
-                        chart_df = account_ratio_df.dropna(subset=['datetime', ratio_col])
-                        
-                        if not chart_df.empty:
-                            fig = px.line(
-                                chart_df,
-                                x='datetime',
-                                y=ratio_col,
-                                title="Top Traders Long/Short Account Ratio"
-                            )
-                        else:
-                            st.warning("Not enough valid data points to display the account ratio chart.")
-                            # Skip the rest of this section
-                            ratio_available = False
-
-                    # Only add reference line if the chart exists and ratio is available
-                    if ratio_available and 'fig' in locals():
-                        fig.add_hline(
-                            y=1,
-                            line_dash="dash",
-                            line_color="gray",
-                            annotation_text="Equal"
-                        )
-
-                        # Add price overlay if available and chart exists
-                        if 'price' in account_ratio_df.columns:
-                            # Make sure we have valid price data
-                            price_df = account_ratio_df.dropna(subset=['datetime', 'price'])
-                            if not price_df.empty:
-                                fig.add_trace(
-                                    go.Scatter(
-                                        x=price_df['datetime'],
-                                        y=price_df['price'],
-                                        name='Price',
-                                        yaxis="y2",
-                                        line=dict(color=ASSET_COLORS.get(asset, '#FF9900'))
-                                    )
-                                )
-
-                                fig.update_layout(
-                                    yaxis2=dict(
-                                        title="Price (USD)",
-                                        overlaying="y",
-                                        side="right"
-                                    )
-                                )
-
-                        # Display the chart if it exists and ratio is available
-                        display_chart(apply_chart_theme(fig))
-                    
-                    # Display Long vs Short percentage chart as well
-                    if 'top_account_long_percent' in account_ratio_df.columns and 'top_account_short_percent' in account_ratio_df.columns:
-                        st.subheader("Top Traders Long/Short Account Percentages")
-                        
-                        try:
-                            # Create a dataframe for plotting long and short percentages
-                            plot_df = account_ratio_df[['datetime', 'top_account_long_percent', 'top_account_short_percent']].copy()
-                            
-                            # Ensure data is clean - drop NaN values
-                            plot_df = plot_df.dropna(subset=['datetime', 'top_account_long_percent', 'top_account_short_percent'])
-                            
-                            if not plot_df.empty and len(plot_df) > 1:  # Need at least 2 points for a line
-                                try:
-                                    # Create the figure with two lines
-                                    fig_pct = go.Figure()
-                                    
-                                    fig_pct.add_trace(go.Scatter(
-                                        x=plot_df['datetime'],
-                                        y=plot_df['top_account_long_percent'],
-                                        name='Long %',
-                                        line=dict(color='green', width=2)
-                                    ))
-                                    
-                                    fig_pct.add_trace(go.Scatter(
-                                        x=plot_df['datetime'],
-                                        y=plot_df['top_account_short_percent'],
-                                        name='Short %',
-                                        line=dict(color='red', width=2)
-                                    ))
-                                    
-                                    fig_pct.update_layout(
-                                        title="Top Traders Account Long/Short Percentages",
-                                        xaxis_title=None,
-                                        yaxis_title="Percentage (%)",
-                                        hovermode="x unified"
-                                    )
-                                    
-                                    display_chart(apply_chart_theme(fig_pct))
-                                except Exception as e:
-                                    logger.error(f"Error creating percentage chart: {e}")
-                                    st.warning("Error displaying percentage chart.")
-                            else:
-                                st.warning("Not enough valid data points to display the percentage chart.")
-                        except Exception as e:
-                            logger.error(f"Error creating account percentages chart: {e}")
-                            st.error(f"Could not create percentage chart: {e}")
-                else:
-                    st.warning(f"Account ratio data is missing required columns. Available columns: {list(account_ratio_df.columns)}")
-            except Exception as e:
-                logger.error(f"Error processing account ratio data: {e}")
-                st.error(f"Error processing account ratio data: {e}")
-        else:
-            st.info("No top traders account ratio data available.")
-
-        # Global long/short account ratio - try multiple possible key formats
-        global_account_ratio_df = None
-        possible_global_keys = [
-            'api_futures_global_long_short_account_ratio_history',
-            f'api_futures_global_long_short_account_ratio_history_{asset}',
-            'api_futures_global_account_ratio_history'
-        ]
-
-        # Try each key format until we find data
-        for key in possible_global_keys:
-            if key in data and not data[key].empty:
-                global_account_ratio_df = data[key]
-                logger.info(f"Found global account ratio data using key: {key}")
-                break
-
-        if global_account_ratio_df is not None and not global_account_ratio_df.empty:
-            try:
-                # Process timestamps (ensuring epoch timestamp in milliseconds is handled correctly)
-                if 'time' in global_account_ratio_df.columns and 'datetime' not in global_account_ratio_df.columns:
-                    # Direct conversion of epoch milliseconds to datetime
-                    global_account_ratio_df['datetime'] = pd.to_datetime(global_account_ratio_df['time'], unit='ms')
-                    logger.info(f"Converted 'time' column directly to datetime for global account ratio data")
-                else:
-                    # Process timestamps using the standard function as fallback
-                    global_account_ratio_df = process_timestamps(global_account_ratio_df)
-                    logger.info(f"Used process_timestamps for global account ratio data")
-
-                # Check column names and map if needed
-                column_mapping = {}
-
-                # Check for different column naming patterns
-                if 'global_account_long_short_ratio' in global_account_ratio_df.columns and 'long_short_ratio' not in global_account_ratio_df.columns:
-                    column_mapping['global_account_long_short_ratio'] = 'long_short_ratio'
-
-                # Apply column renaming if needed
-                if column_mapping:
-                    global_account_ratio_df = global_account_ratio_df.rename(columns=column_mapping)
-
-                # Make sure percent columns are properly processed
-                if 'global_account_long_percent' in global_account_ratio_df.columns:
-                    # Convert to float if not already
-                    global_account_ratio_df['global_account_long_percent'] = global_account_ratio_df['global_account_long_percent'].astype(float)
-                    
-                if 'global_account_short_percent' in global_account_ratio_df.columns:
-                    # Convert to float if not already
-                    global_account_ratio_df['global_account_short_percent'] = global_account_ratio_df['global_account_short_percent'].astype(float)
-
-                # Calculate ratio if it doesn't exist but we have the components
-                if 'long_short_ratio' not in global_account_ratio_df.columns and 'global_account_long_percent' in global_account_ratio_df.columns and 'global_account_short_percent' in global_account_ratio_df.columns:
-                    global_account_ratio_df['long_short_ratio'] = global_account_ratio_df['global_account_long_percent'] / global_account_ratio_df['global_account_short_percent'].replace(0, float('nan'))
-                
-                # If we have a ratio column, make sure it's properly processed
-                if 'long_short_ratio' in global_account_ratio_df.columns or 'global_account_long_short_ratio' in global_account_ratio_df.columns:
-                    ratio_col = 'long_short_ratio' if 'long_short_ratio' in global_account_ratio_df.columns else 'global_account_long_short_ratio'
-                    # Convert to float if not already
-                    global_account_ratio_df[ratio_col] = global_account_ratio_df[ratio_col].astype(float)
-
-                # Create metrics for global account ratio
-                if 'global_account_long_percent' in global_account_ratio_df.columns and 'global_account_short_percent' in global_account_ratio_df.columns:
-                    # Get the most recent values
-                    latest_data = global_account_ratio_df.iloc[-1]
-                    
-                    long_percent = latest_data.get('global_account_long_percent', 0)
-                    short_percent = latest_data.get('global_account_short_percent', 0)
-                    ratio = latest_data.get('long_short_ratio', 0)
-                    
-                    metrics = {
-                        "Long %": {
-                            "value": long_percent,
-                            "delta": None,
-                            "delta_suffix": "%"
-                        },
-                        "Short %": {
-                            "value": short_percent,
-                            "delta": None,
-                            "delta_suffix": "%"
-                        },
-                        "Long/Short Ratio": {
-                            "value": ratio,
-                            "delta": None
-                        }
-                    }
-                    
-                    formatters = {
-                        "Long %": lambda x: f"{x:.2f}%",
-                        "Short %": lambda x: f"{x:.2f}%",
-                        "Long/Short Ratio": lambda x: f"{x:.4f}" if pd.notna(x) else "N/A"
-                    }
-                    
-                    display_metrics_row(metrics, formatters)
-
-                # Check if we have the required columns now
-                if 'datetime' in global_account_ratio_df.columns:
-                    ratio_available = False
-                    
-                    # Try different ratio column names
-                    if 'long_short_ratio' in global_account_ratio_df.columns:
-                        ratio_col = 'long_short_ratio'
-                        ratio_available = True
-                    elif 'global_account_long_short_ratio' in global_account_ratio_df.columns:
-                        ratio_col = 'global_account_long_short_ratio'
-                        ratio_available = True
-                    
-                    # If neither column exists but we have long and short percentages, create ratio
-                    elif 'global_account_long_percent' in global_account_ratio_df.columns and 'global_account_short_percent' in global_account_ratio_df.columns:
-                        global_account_ratio_df['long_short_ratio'] = global_account_ratio_df['global_account_long_percent'] / global_account_ratio_df['global_account_short_percent'].replace(0, float('nan'))
-                        ratio_col = 'long_short_ratio'
-                        ratio_available = True
-                    
-                    if ratio_available:
-                        # Create chart
-                        st.subheader("Global Long/Short Account Ratio")
-                        
-                        # Drop NaN values to prevent chart errors
-                        chart_df = global_account_ratio_df.dropna(subset=['datetime', ratio_col])
-                        
-                        if not chart_df.empty:
-                            fig = px.line(
-                                chart_df,
-                                x='datetime',
-                                y=ratio_col,
-                                title="Global Long/Short Account Ratio"
-                            )
-                        else:
-                            st.warning("Not enough valid data points to display the global account ratio chart.")
-                            # Skip the rest of this section
-                            ratio_available = False
-
-                    # Only add reference line if the chart exists and ratio is available
-                    if ratio_available and 'fig' in locals():
-                        fig.add_hline(
-                            y=1,
-                            line_dash="dash",
-                            line_color="gray",
-                            annotation_text="Equal"
-                        )
-
-                        # Add price overlay if available
-                        if 'price' in global_account_ratio_df.columns:
-                            # Make sure we have valid price data
-                            price_df = global_account_ratio_df.dropna(subset=['datetime', 'price'])
-                            if not price_df.empty:
-                                fig.add_trace(
-                                    go.Scatter(
-                                        x=price_df['datetime'],
-                                        y=price_df['price'],
-                                        name='Price',
-                                        yaxis="y2",
-                                        line=dict(color=ASSET_COLORS.get(asset, '#FF9900'))
-                                    )
-                                )
-
-                                fig.update_layout(
-                                    yaxis2=dict(
-                                        title="Price (USD)",
-                                        overlaying="y",
-                                        side="right"
-                                    )
-                                )
-
-                        # Display the chart if it exists
-                        display_chart(apply_chart_theme(fig))
-                    
-                    # Display Long vs Short percentage chart as well
-                    if 'global_account_long_percent' in global_account_ratio_df.columns and 'global_account_short_percent' in global_account_ratio_df.columns:
-                        st.subheader("Global Long/Short Account Percentages")
-                        
-                        try:
-                            # Create a dataframe for plotting long and short percentages
-                            plot_df = global_account_ratio_df[['datetime', 'global_account_long_percent', 'global_account_short_percent']].copy()
-                            
-                            # Ensure data is clean - drop NaN values
-                            plot_df = plot_df.dropna(subset=['datetime', 'global_account_long_percent', 'global_account_short_percent'])
-                            
-                            if not plot_df.empty and len(plot_df) > 1:  # Need at least 2 points for a line
-                                try:
-                                    # Create the figure with two lines
-                                    fig_pct = go.Figure()
-                                    
-                                    fig_pct.add_trace(go.Scatter(
-                                        x=plot_df['datetime'],
-                                        y=plot_df['global_account_long_percent'],
-                                        name='Long %',
-                                        line=dict(color='green', width=2)
-                                    ))
-                                    
-                                    fig_pct.add_trace(go.Scatter(
-                                        x=plot_df['datetime'],
-                                        y=plot_df['global_account_short_percent'],
-                                        name='Short %',
-                                        line=dict(color='red', width=2)
-                                    ))
-                                    
-                                    fig_pct.update_layout(
-                                        title="Global Account Long/Short Percentages",
-                                        xaxis_title=None,
-                                        yaxis_title="Percentage (%)",
-                                        hovermode="x unified"
-                                    )
-                                    
-                                    display_chart(apply_chart_theme(fig_pct))
-                                except Exception as e:
-                                    logger.error(f"Error creating global percentage chart: {e}")
-                                    st.warning("Error displaying global percentage chart.")
-                            else:
-                                st.warning("Not enough valid data points to display the global percentage chart.")
-                        except Exception as e:
-                            logger.error(f"Error processing global account percentages chart: {e}")
-                            st.error(f"Could not create global percentage chart: {e}")
-                else:
-                    st.warning(f"Global account ratio data is missing required columns. Available columns: {list(global_account_ratio_df.columns)}")
-            except Exception as e:
-                logger.error(f"Error processing global account ratio data: {e}")
-                st.error(f"Error processing global account ratio data: {e}")
-        else:
-            st.info("No global long/short account ratio data available.")
-
-    with tab3:
-        # Top traders long/short position ratio - try multiple possible key formats
-        position_ratio_df = None
-        possible_position_keys = [
-            'api_futures_top_long_short_position_ratio_history',
-            f'api_futures_top_long_short_position_ratio_history_{asset}',
-            'api_futures_top_position_ratio_history'
-        ]
-
-        # Try each key format until we find data
-        for key in possible_position_keys:
-            if key in data and not data[key].empty:
-                position_ratio_df = data[key]
-                logger.info(f"Found position ratio data using key: {key}")
-                break
-
-        if position_ratio_df is not None and not position_ratio_df.empty:
-            try:
-                # Process timestamps (ensuring epoch timestamp in milliseconds is handled correctly)
-                if 'time' in position_ratio_df.columns and 'datetime' not in position_ratio_df.columns:
-                    # Direct conversion of epoch milliseconds to datetime
-                    position_ratio_df['datetime'] = pd.to_datetime(position_ratio_df['time'], unit='ms')
-                    logger.info(f"Converted 'time' column directly to datetime for position ratio data")
-                else:
-                    # Process timestamps using the standard function as fallback
-                    position_ratio_df = process_timestamps(position_ratio_df)
-                    logger.info(f"Used process_timestamps for position ratio data")
-
-                # Check column names and map if needed
-                column_mapping = {}
-
-                # Check for different column naming patterns
-                if 'top_position_long_short_ratio' in position_ratio_df.columns and 'long_short_ratio' not in position_ratio_df.columns:
-                    column_mapping['top_position_long_short_ratio'] = 'long_short_ratio'
-
-                # Apply column renaming if needed
-                if column_mapping:
-                    position_ratio_df = position_ratio_df.rename(columns=column_mapping)
-
-                # Make sure percent columns are properly processed
-                if 'top_position_long_percent' in position_ratio_df.columns:
-                    # Convert to float if not already
-                    position_ratio_df['top_position_long_percent'] = position_ratio_df['top_position_long_percent'].astype(float)
-                    
-                if 'top_position_short_percent' in position_ratio_df.columns:
-                    # Convert to float if not already
-                    position_ratio_df['top_position_short_percent'] = position_ratio_df['top_position_short_percent'].astype(float)
-
-                # Calculate ratio if it doesn't exist but we have the components
-                if 'long_short_ratio' not in position_ratio_df.columns and 'top_position_long_percent' in position_ratio_df.columns and 'top_position_short_percent' in position_ratio_df.columns:
-                    position_ratio_df['long_short_ratio'] = position_ratio_df['top_position_long_percent'] / position_ratio_df['top_position_short_percent'].replace(0, float('nan'))
-                
-                # If we have a ratio column, make sure it's properly processed
-                if 'long_short_ratio' in position_ratio_df.columns or 'top_position_long_short_ratio' in position_ratio_df.columns:
-                    ratio_col = 'long_short_ratio' if 'long_short_ratio' in position_ratio_df.columns else 'top_position_long_short_ratio'
-                    # Convert to float if not already
-                    position_ratio_df[ratio_col] = position_ratio_df[ratio_col].astype(float)
-
-                # Create metrics for position ratio
-                if 'top_position_long_percent' in position_ratio_df.columns and 'top_position_short_percent' in position_ratio_df.columns:
-                    # Get the most recent values
-                    latest_data = position_ratio_df.iloc[-1]
-                    
-                    long_percent = latest_data.get('top_position_long_percent', 0)
-                    short_percent = latest_data.get('top_position_short_percent', 0)
-                    ratio = latest_data.get('long_short_ratio', 0)
-                    
-                    metrics = {
-                        "Long %": {
-                            "value": long_percent,
-                            "delta": None,
-                            "delta_suffix": "%"
-                        },
-                        "Short %": {
-                            "value": short_percent,
-                            "delta": None,
-                            "delta_suffix": "%"
-                        },
-                        "Long/Short Ratio": {
-                            "value": ratio,
-                            "delta": None
-                        }
-                    }
-                    
-                    formatters = {
-                        "Long %": lambda x: f"{x:.2f}%",
-                        "Short %": lambda x: f"{x:.2f}%",
-                        "Long/Short Ratio": lambda x: f"{x:.4f}" if pd.notna(x) else "N/A"
-                    }
-                    
-                    display_metrics_row(metrics, formatters)
-
-                # Check if we have the required columns now
-                if 'datetime' in position_ratio_df.columns:
-                    ratio_available = False
-                    
-                    # Try different ratio column names
-                    if 'long_short_ratio' in position_ratio_df.columns:
-                        ratio_col = 'long_short_ratio'
-                        ratio_available = True
-                    elif 'top_position_long_short_ratio' in position_ratio_df.columns:
-                        ratio_col = 'top_position_long_short_ratio'
-                        ratio_available = True
-                    
-                    # If neither column exists but we have long and short percentages, create ratio
-                    elif 'top_position_long_percent' in position_ratio_df.columns and 'top_position_short_percent' in position_ratio_df.columns:
-                        position_ratio_df['long_short_ratio'] = position_ratio_df['top_position_long_percent'] / position_ratio_df['top_position_short_percent'].replace(0, float('nan'))
-                        ratio_col = 'long_short_ratio'
-                        ratio_available = True
-                    
-                    if ratio_available:
-                        # Create chart
-                        st.subheader("Top Traders Long/Short Position Ratio")
-                        
-                        # Drop NaN values to prevent chart errors
-                        chart_df = position_ratio_df.dropna(subset=['datetime', ratio_col])
-                        
-                        if not chart_df.empty:
-                            fig = px.line(
-                                chart_df,
-                                x='datetime',
-                                y=ratio_col,
-                                title="Top Traders Long/Short Position Ratio"
-                            )
-                        else:
-                            st.warning("Not enough valid data points to display the position ratio chart.")
-                            # Skip the rest of this section
-                            ratio_available = False
-
-                    # Only add reference line if the chart exists and ratio is available
-                    if ratio_available and 'fig' in locals():
-                        fig.add_hline(
-                            y=1,
-                            line_dash="dash",
-                            line_color="gray",
-                            annotation_text="Equal"
-                        )
-
-                        # Add price overlay if available
-                        if 'price' in position_ratio_df.columns:
-                            # Make sure we have valid price data
-                            price_df = position_ratio_df.dropna(subset=['datetime', 'price'])
-                            if not price_df.empty:
-                                fig.add_trace(
-                                    go.Scatter(
-                                        x=price_df['datetime'],
-                                        y=price_df['price'],
-                                        name='Price',
-                                        yaxis="y2",
-                                        line=dict(color=ASSET_COLORS.get(asset, '#FF9900'))
-                                    )
-                                )
-
-                                fig.update_layout(
-                                    yaxis2=dict(
-                                        title="Price (USD)",
-                                        overlaying="y",
-                                        side="right"
-                                    )
-                                )
-
-                        # Display the chart if it exists
-                        display_chart(apply_chart_theme(fig))
-                    
-                    # Display Long vs Short percentage chart as well
-                    if 'top_position_long_percent' in position_ratio_df.columns and 'top_position_short_percent' in position_ratio_df.columns:
-                        st.subheader("Top Traders Long/Short Position Percentages")
-                        
-                        try:
-                            # Create a dataframe for plotting long and short percentages
-                            plot_df = position_ratio_df[['datetime', 'top_position_long_percent', 'top_position_short_percent']].copy()
-                            
-                            # Ensure data is clean - drop NaN values
-                            plot_df = plot_df.dropna(subset=['datetime', 'top_position_long_percent', 'top_position_short_percent'])
-                            
-                            if not plot_df.empty and len(plot_df) > 1:  # Need at least 2 points for a line
-                                try:
-                                    # Create the figure with two lines
-                                    fig_pct = go.Figure()
-                                    
-                                    fig_pct.add_trace(go.Scatter(
-                                        x=plot_df['datetime'],
-                                        y=plot_df['top_position_long_percent'],
-                                        name='Long %',
-                                        line=dict(color='green', width=2)
-                                    ))
-                                    
-                                    fig_pct.add_trace(go.Scatter(
-                                        x=plot_df['datetime'],
-                                        y=plot_df['top_position_short_percent'],
-                                        name='Short %',
-                                        line=dict(color='red', width=2)
-                                    ))
-                                    
-                                    fig_pct.update_layout(
-                                        title="Top Traders Position Long/Short Percentages",
-                                        xaxis_title=None,
-                                        yaxis_title="Percentage (%)",
-                                        hovermode="x unified"
-                                    )
-                                    
-                                    display_chart(apply_chart_theme(fig_pct))
-                                except Exception as e:
-                                    logger.error(f"Error creating position percentage chart: {e}")
-                                    st.warning("Error displaying position percentage chart.")
-                            else:
-                                st.warning("Not enough valid data points to display the position percentage chart.")
-                        except Exception as e:
-                            logger.error(f"Error processing position percentages chart: {e}")
-                            st.error(f"Could not create position percentage chart: {e}")
-                else:
-                    st.warning(f"Position ratio data is missing required columns. Available columns: {list(position_ratio_df.columns)}")
-            except Exception as e:
-                logger.error(f"Error processing position ratio data: {e}")
-                st.error(f"Error processing position ratio data: {e}")
-        else:
-            st.info("No top traders position ratio data available.")
-
-def render_order_book_page(asset):
-    """Render the order book page for the specified asset."""
+def render_order_book_page(asset, all_selected_assets=None, selected_exchanges=None, selected_time_range=None):
+    """Render the order book page for the specified asset and selected exchanges.
+    
+    Parameters:
+    -----------
+    asset: str
+        Primary asset to display (for backward compatibility)
+    all_selected_assets: list
+        List of all selected assets to display
+    selected_exchanges: list
+        List of exchanges to display data for
+    selected_time_range: str
+        Selected time range for filtering data
+    """
     st.header(f"{asset} Order Book Analysis")
-
+    
+    # Exchange selector
+    # Define available exchanges for order book
+    available_exchanges = ["Binance", "OKX", "Bybit", "dYdX", "Bitfinex", "All"]
+    
+    # Default to session state if it exists, otherwise use All
+    default_exchanges = selected_exchanges if selected_exchanges else ["All"]
+    
+    # Add exchange selector
+    exchange_col1, exchange_col2 = st.columns([3, 1])
+    with exchange_col1:
+        selected_exchanges = st.multiselect(
+            "Select Exchanges to Display",
+            available_exchanges,
+            default=default_exchanges,
+            key=f"order_book_exchange_selector_{asset}"
+        )
+    
+    # Ensure at least one exchange is selected
+    if not selected_exchanges:
+        selected_exchanges = ["All"]
+        st.warning("At least one exchange must be selected. Defaulting to 'All'.")
+    
+    # Store in session state for this section
+    st.session_state.selected_order_book_exchanges = selected_exchanges
+    
+    # For backward compatibility
+    st.session_state.selected_exchanges = selected_exchanges
+    
     # Load order book data
     data = load_futures_data('order_book', asset)
 
@@ -2427,140 +1442,9 @@ def render_order_book_page(asset):
     else:
         st.info(f"No aggregated order book history data available for {asset}.")
 
-    # Detailed order book data - look for exchange specific data
-    if 'api_futures_orderbook_ask_bids_history' in data:
-        detailed_ob_df = data['api_futures_orderbook_ask_bids_history']
-
-        if not detailed_ob_df.empty:
-            try:
-                # Map column names if needed
-                column_mapping = {}
-
-                # Map asks/bids USD to amount if needed
-                if 'asks_usd' in detailed_ob_df.columns and 'asks_amount' not in detailed_ob_df.columns:
-                    column_mapping['asks_usd'] = 'asks_amount'
-
-                if 'bids_usd' in detailed_ob_df.columns and 'bids_amount' not in detailed_ob_df.columns:
-                    column_mapping['bids_usd'] = 'bids_amount'
-
-                # Map quantity columns too if needed
-                if 'asks_quantity' in detailed_ob_df.columns and 'asks_qty' not in detailed_ob_df.columns:
-                    column_mapping['asks_quantity'] = 'asks_qty'
-
-                if 'bids_quantity' in detailed_ob_df.columns and 'bids_qty' not in detailed_ob_df.columns:
-                    column_mapping['bids_quantity'] = 'bids_qty'
-
-                # Apply column renaming if needed
-                if column_mapping:
-                    detailed_ob_df = detailed_ob_df.rename(columns=column_mapping)
-
-                # Add exchange_name if it doesn't exist but we have exchange
-                if 'exchange_name' not in detailed_ob_df.columns and 'exchange' in detailed_ob_df.columns:
-                    detailed_ob_df['exchange_name'] = detailed_ob_df['exchange']
-
-                # Add symbol if it doesn't exist (use 'pair' if available)
-                if 'symbol' not in detailed_ob_df.columns:
-                    if 'pair' in detailed_ob_df.columns:
-                        detailed_ob_df['symbol'] = detailed_ob_df['pair']
-                    else:
-                        # Default to asset name if no symbol/pair info
-                        detailed_ob_df['symbol'] = asset + "USDT"  # Default to most common format
-
-                # Filter for the selected asset
-                asset_ob = None
-                if 'symbol' in detailed_ob_df.columns:
-                    asset_ob = detailed_ob_df[detailed_ob_df['symbol'].str.contains(asset, case=False, na=False)]
-                else:
-                    # If no symbol column, use the whole dataframe
-                    asset_ob = detailed_ob_df.copy()
-
-                if asset_ob is not None and not asset_ob.empty:
-                    # Process dataframe
-                    asset_ob = process_timestamps(asset_ob)
-
-                    # Add exchange_name if it doesn't exist
-                    if 'exchange_name' not in asset_ob.columns:
-                        # Try to determine from data or default to a fixed value
-                        if len(asset_ob) > 0 and 'exchange' in asset_ob.columns:
-                            asset_ob['exchange_name'] = asset_ob['exchange']
-                        else:
-                            # Default exchange name
-                            asset_ob['exchange_name'] = "Binance"  # Default to most common exchange
-
-                    # Group by exchange
-                    exchanges = asset_ob['exchange_name'].unique()
-
-                    if len(exchanges) > 0:
-                        # Add exchange selector
-                        selected_exchange = st.selectbox("Select Exchange", exchanges)
-
-                        # Filter for selected exchange
-                        exchange_ob = asset_ob[asset_ob['exchange_name'] == selected_exchange]
-
-                        if not exchange_ob.empty:
-                            # Check required columns
-                            if 'asks_amount' in exchange_ob.columns and 'bids_amount' in exchange_ob.columns:
-                                st.subheader(f"{selected_exchange} {asset} Order Book")
-
-                                # Create time series chart for asks and bids
-                                fig = go.Figure()
-
-                                fig.add_trace(go.Scatter(
-                                    x=exchange_ob['datetime'],
-                                    y=exchange_ob['asks_amount'],
-                                    name='Asks Amount',
-                                    line=dict(color='red')
-                                ))
-
-                                fig.add_trace(go.Scatter(
-                                    x=exchange_ob['datetime'],
-                                    y=exchange_ob['bids_amount'],
-                                    name='Bids Amount',
-                                    line=dict(color='green')
-                                ))
-
-                                # Update layout
-                                fig.update_layout(
-                                    title=f"{selected_exchange} {asset} Order Book",
-                                    xaxis_title=None,
-                                    yaxis_title="Amount (USD)",
-                                    hovermode="x unified"
-                                )
-
-                                display_chart(apply_chart_theme(fig))
-
-                                # Create ratio chart
-                                exchange_ob['asks_bids_ratio'] = exchange_ob['asks_amount'] / exchange_ob['bids_amount'].replace(0, float('nan'))
-
-                                fig = px.line(
-                                    exchange_ob,
-                                    x='datetime',
-                                    y='asks_bids_ratio',
-                                    title=f"{selected_exchange} {asset} Ask/Bid Ratio"
-                                )
-
-                                # Add reference line at 1 (equal asks and bids)
-                                fig.add_hline(
-                                    y=1,
-                                    line_dash="dash",
-                                    line_color="gray",
-                                    annotation_text="Equal"
-                                )
-
-                                display_chart(apply_chart_theme(fig))
-                            else:
-                                st.warning(f"Exchange order book data is missing required columns. Available: {list(exchange_ob.columns)}")
-                        else:
-                            st.info(f"No data available for {selected_exchange}.")
-                    else:
-                        st.info("No exchange data available in the order book data.")
-                else:
-                    st.info(f"No detailed order book data available for {asset}.")
-            except Exception as e:
-                logger.error(f"Error processing detailed order book data: {e}")
-                st.error(f"Error processing detailed order book data: {e}")
-        else:
-            st.info("No detailed order book data available.")
+    # Removed duplicate exchange-specific order book visualization as requested
+    # This section previously showed individual exchange order book data
+    # The top aggregated charts are kept intact
 
     # Large limit orders
     if 'api_futures_orderbook_large_limit_order' in data:
@@ -2608,10 +1492,50 @@ def render_order_book_page(asset):
         else:
             st.info("No large limit order data available.")
 
-def render_market_data_page(asset):
-    """Render the market data page for the specified asset."""
+def render_market_data_page(asset, all_selected_assets=None, selected_exchanges=None, selected_time_range=None):
+    """Render the market data page for the specified asset and selected exchanges.
+    
+    Parameters:
+    -----------
+    asset: str
+        Primary asset to display (for backward compatibility)
+    all_selected_assets: list
+        List of all selected assets to display
+    selected_exchanges: list
+        List of exchanges to display data for
+    selected_time_range: str
+        Selected time range for filtering data
+    """
     st.header(f"{asset} Futures Market Data")
-
+    
+    # Exchange selector
+    # Define available exchanges for market data
+    available_exchanges = ["Binance", "OKX", "Bybit", "dYdX", "Bitfinex", "All"]
+    
+    # Default to session state if it exists, otherwise use All
+    default_exchanges = selected_exchanges if selected_exchanges else ["All"]
+    
+    # Add exchange selector
+    exchange_col1, exchange_col2 = st.columns([3, 1])
+    with exchange_col1:
+        selected_exchanges = st.multiselect(
+            "Select Exchanges to Display",
+            available_exchanges,
+            default=default_exchanges,
+            key=f"market_data_exchange_selector_{asset}"
+        )
+    
+    # Ensure at least one exchange is selected
+    if not selected_exchanges:
+        selected_exchanges = ["All"]
+        st.warning("At least one exchange must be selected. Defaulting to 'All'.")
+    
+    # Store in session state for this section
+    st.session_state.selected_market_data_exchanges = selected_exchanges
+    
+    # For backward compatibility
+    st.session_state.selected_exchanges = selected_exchanges
+    
     # Load market data
     data = load_futures_data('market', asset)
 
@@ -2810,6 +1734,10 @@ def render_market_data_page(asset):
             for col in numeric_cols:
                 if col in pairs_df.columns and pairs_df[col].dtype == 'object':
                     pairs_df[col] = pd.to_numeric(pairs_df[col], errors='coerce')
+                    
+            # Filter by selected exchanges if needed (if not "All")
+            if 'exchange_name' in pairs_df.columns and selected_exchanges and "All" not in selected_exchanges:
+                pairs_df = pairs_df[pairs_df['exchange_name'].isin(selected_exchanges)]
 
             st.subheader(f"{asset} Trading Pairs")
 
@@ -2978,6 +1906,10 @@ def render_market_data_page(asset):
 
                 # Filter out rows with NaN funding rates
                 funding_df = funding_df.dropna(subset=['funding_rate'])
+                
+                # Filter by selected exchanges if needed (if not "All")
+                if 'exchange_name' in funding_df.columns and selected_exchanges and "All" not in selected_exchanges:
+                    funding_df = funding_df[funding_df['exchange_name'].isin(selected_exchanges)]
 
                 if not funding_df.empty:
                     # Sort by funding rate
@@ -3120,21 +2052,44 @@ def main():
     st.title("Cryptocurrency Futures Markets")
 
     try:
-        # Get asset from session state or use default
+        # Get available assets for futures category
         available_assets = get_available_assets_for_category('futures')
 
         # Set default assets if none are available
         if not available_assets:
             st.warning("No futures data available for any asset. Showing layout with placeholder data.")
             available_assets = ["BTC", "ETH", "SOL", "XRP"]
-
-        asset = st.session_state.get('selected_asset', available_assets[0])
+        
+        # Asset selection with dropdown
+        st.subheader("Select Asset to Display")
+        
+        # Initialize with previously selected asset if available, otherwise default to first asset
+        default_asset = st.session_state.get('selected_futures_assets', [available_assets[0]])
+        default_index = available_assets.index(default_asset[0]) if default_asset and default_asset[0] in available_assets else 0
+        
+        # Add dropdown for asset selection (improved from multiselect for better UI)
+        selected_asset = st.selectbox(
+            "Select asset to display",
+            available_assets,
+            index=default_index
+        )
+        
+        # Use a single asset in a list for compatibility with existing code
+        selected_assets = [selected_asset]
+        
+        # Store selected assets in session state for this page
+        st.session_state.selected_futures_assets = selected_assets
+        
+        # For backward compatibility with existing code, use first selected asset as primary
+        asset = selected_assets[0]
+        
+        # Also update the general selected_asset session state for compatibility
+        st.session_state.selected_asset = asset
 
         # Define the categories
         futures_categories = [
             "Funding Rate",
             "Liquidation",
-            "Long/Short Ratio",
             "Open Interest",
             "Order Book",
             "Market Data"
@@ -3159,7 +2114,10 @@ def main():
             try:
                 subcategory = 'funding_rate'
                 st.session_state.futures_subcategory = subcategory
-                render_funding_rate_page(asset)
+                # Use page-specific exchange selection if available, otherwise use general selection
+                selected_funding_exchanges = st.session_state.get('selected_funding_rate_exchanges', 
+                                                        st.session_state.get('selected_exchanges', ["All"]))
+                render_funding_rate_page(asset, selected_assets, selected_funding_exchanges)
             except Exception as e:
                 logger.error(f"Error rendering funding_rate tab: {e}")
                 st.error(f"Error displaying funding rate data")
@@ -3169,47 +2127,49 @@ def main():
             try:
                 subcategory = 'liquidation'
                 st.session_state.futures_subcategory = subcategory
-                render_liquidation_page(asset)
+                # Use page-specific exchange selection if available, otherwise use general selection
+                selected_liquidation_exchanges = st.session_state.get('selected_liquidation_exchanges', 
+                                                          st.session_state.get('selected_exchanges', ["All"]))
+                render_liquidation_page(asset, selected_assets, selected_liquidation_exchanges)
             except Exception as e:
                 logger.error(f"Error rendering liquidation tab: {e}")
                 st.error(f"Error displaying liquidation data")
                 st.info("There was an error processing the liquidation data. This could be due to an unexpected data format or missing data.")
 
-        with tabs[2]:  # Long/Short Ratio
-            try:
-                subcategory = 'long_short_ratio'
-                st.session_state.futures_subcategory = subcategory
-                render_long_short_ratio_page(asset)
-            except Exception as e:
-                logger.error(f"Error rendering long_short_ratio tab: {e}")
-                st.error(f"Error displaying long/short ratio data")
-                st.info("There was an error processing the long/short ratio data. This could be due to an unexpected data format or missing data.")
-
-        with tabs[3]:  # Open Interest
+        with tabs[2]:  # Open Interest
             try:
                 subcategory = 'open_interest'
                 st.session_state.futures_subcategory = subcategory
-                render_open_interest_page(asset)
+                # Use page-specific exchange selection if available, otherwise use general selection
+                selected_oi_exchanges = st.session_state.get('selected_oi_exchanges', 
+                                                 st.session_state.get('selected_exchanges', ["All"]))
+                render_open_interest_page(asset, selected_assets, selected_oi_exchanges)
             except Exception as e:
                 logger.error(f"Error rendering open_interest tab: {e}")
                 st.error(f"Error displaying open interest data")
                 st.info("There was an error processing the open interest data. This could be due to an unexpected data format or missing data.")
 
-        with tabs[4]:  # Order Book
+        with tabs[3]:  # Order Book
             try:
                 subcategory = 'order_book'
                 st.session_state.futures_subcategory = subcategory
-                render_order_book_page(asset)
+                # Use page-specific exchange selection if available, otherwise use general selection
+                selected_orderbook_exchanges = st.session_state.get('selected_order_book_exchanges', 
+                                                        st.session_state.get('selected_exchanges', ["All"]))
+                render_order_book_page(asset, selected_assets, selected_orderbook_exchanges)
             except Exception as e:
                 logger.error(f"Error rendering order_book tab: {e}")
                 st.error(f"Error displaying order book data")
                 st.info("There was an error processing the order book data. This could be due to an unexpected data format or missing data.")
 
-        with tabs[5]:  # Market Data
+        with tabs[4]:  # Market Data
             try:
                 subcategory = 'market_data'
                 st.session_state.futures_subcategory = subcategory
-                render_market_data_page(asset)
+                # Use page-specific exchange selection if available, otherwise use general selection
+                selected_market_exchanges = st.session_state.get('selected_market_data_exchanges', 
+                                                     st.session_state.get('selected_exchanges', ["All"]))
+                render_market_data_page(asset, selected_assets, selected_market_exchanges)
             except Exception as e:
                 logger.error(f"Error rendering market_data tab: {e}")
                 st.error(f"Error displaying market data")
@@ -3220,10 +2180,6 @@ def main():
         logger.error(f"Critical error in futures page: {e}")
         st.error("An error occurred while loading the futures page. Please check the logs for more information.")
     
-    # Add footer
-    st.markdown("---")
-    st.caption("Izun Crypto Liquidity Report © 2025")
-    st.caption("Data provided by CoinGlass API")
 
 if __name__ == "__main__":
     main()

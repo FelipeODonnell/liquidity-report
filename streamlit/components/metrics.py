@@ -11,9 +11,10 @@ import os
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 from utils.formatters import format_currency, format_percentage, format_volume, format_delta
 
-def display_metric_card(title, value, delta=None, delta_suffix="%", formatter=None, help_text=None):
+def display_metric_card(title, value, delta=None, delta_suffix="%", formatter=None, help_text=None, delta_formatter=None, 
+                      compact=False, color_delta=True, debug_info=None, custom_css=None, hide_label=False):
     """
-    Display a metric card with optional delta.
+    Display a metric card with optional delta, improved formatting.
     
     Parameters:
     -----------
@@ -29,72 +30,223 @@ def display_metric_card(title, value, delta=None, delta_suffix="%", formatter=No
         Function to format the value
     help_text : str, optional
         Help text to display on hover
+    delta_formatter : callable, optional
+        Function to format the delta value (overrides default)
+    compact : bool
+        Whether to use a more compact display format
+    color_delta : bool
+        Whether to color the delta (green for positive, red for negative)
+    debug_info : str, optional
+        Debug information to display in dev mode
+    custom_css : str, optional
+        Custom CSS to apply to the metric card
+    hide_label : bool
+        Whether to hide the label/title (useful for compact displays)
     """
-    # Format the value if a formatter is provided
-    if formatter and value is not None:
+    # Format the value based on the type
+    if value is None:
+        formatted_value = "N/A"
+    elif formatter and callable(formatter):
         formatted_value = formatter(value)
+    elif isinstance(value, (int, float)):
+        # Auto-detect if it looks like a currency by checking the title
+        title_lower = title.lower()
+        is_currency = any(term in title_lower for term in 
+                         ['price', 'volume', 'amount', 'usd', 'value', 'cap', 'aum', 'assets', 'fund', 'flow', 
+                          'liquidation', 'interest', 'depth', 'bid', 'ask', 'spread', 'cost', 'profit',
+                          'balance', 'market', 'trade']) or title_lower.endswith('usd')
+        
+        if is_currency:
+            # Format as currency without decimals for better headline stats
+            if abs(value) < 0.01 and value != 0:
+                # Special handling for very small currency values
+                formatted_value = format_currency(value, precision=6, show_decimals=True, compact=compact, strip_zeros=True)
+            elif abs(value) < 1 and value != 0:
+                # Special handling for small currency values
+                formatted_value = format_currency(value, precision=4, show_decimals=True, compact=compact, strip_zeros=True)
+            elif abs(value) < 10:
+                # Special handling for currency values under 10
+                formatted_value = format_currency(value, precision=2, show_decimals=True, compact=compact)
+            else:
+                # Format larger currency values without decimals
+                formatted_value = format_currency(value, show_decimals=False, compact=compact, abbreviate=compact)
+        else:
+            # See if it might be a percentage
+            is_percentage = any(term in title_lower for term in 
+                              ['percent', 'change', 'rate', 'ratio', 'growth', '%', 'pct', 'fee', 'premium', 'discount',
+                               'yield', 'return', 'volatility', 'margin']) or title_lower.endswith('%') or title_lower.endswith('pct')
+            
+            if is_percentage:
+                # Format percentage based on magnitude
+                if abs(value) < 0.01 and value != 0:
+                    # Very small percentage
+                    formatted_value = format_percentage(value, precision=4, strip_zeros=True, auto_precision=True)
+                elif abs(value) < 0.1 and value != 0:
+                    # Small percentage
+                    formatted_value = format_percentage(value, precision=3, strip_zeros=True)
+                else:
+                    # Regular percentage
+                    formatted_value = format_percentage(value, strip_zeros=True)
+            else:
+                # Just format with commas for readability, adjust precision based on magnitude
+                if value == 0:
+                    formatted_value = "0"
+                elif abs(value) < 0.001:
+                    formatted_value = f"{value:.6f}"
+                elif abs(value) < 0.01:
+                    formatted_value = f"{value:.4f}"
+                elif abs(value) < 1:
+                    formatted_value = f"{value:.2f}"
+                elif abs(value) < 10:
+                    formatted_value = f"{value:.1f}"
+                elif abs(value) >= 1000000 and compact:
+                    # Abbreviate large numbers in compact mode
+                    formatted_value = f"{value/1000000:.1f}M" if abs(value) >= 1000000 else f"{value/1000:.1f}K"
+                else:
+                    # Apply commas as thousands separators
+                    formatted_value = f"{value:,.0f}"
     else:
-        formatted_value = value
+        # For strings or other types, use as is
+        formatted_value = str(value)
     
     # Format the delta if provided
     if delta is not None:
+        # Use provided delta formatter if available
+        if delta_formatter:
+            formatted_delta = delta_formatter(delta)
         # Check if delta is a string already
-        if isinstance(delta, str):
+        elif isinstance(delta, str):
             formatted_delta = delta
         else:
-            # Format with + sign for positive values
-            if delta > 0:
-                if delta_suffix == "%":
-                    formatted_delta = f"+{format_percentage(delta)}"
+            # Special handling for percentage delta
+            if delta_suffix == "%":
+                # Format percentage delta with plus sign for positive values
+                if abs(delta) < 0.01 and delta != 0:
+                    formatted_delta = format_percentage(delta, precision=4, show_plus=True, strip_zeros=True, auto_precision=True)
+                elif abs(delta) < 0.1 and delta != 0:
+                    formatted_delta = format_percentage(delta, precision=3, show_plus=True, strip_zeros=True)
                 else:
-                    formatted_delta = f"+{delta}{delta_suffix}"
+                    formatted_delta = format_percentage(delta, show_plus=True, strip_zeros=True)
+            # Special handling for currency delta
+            elif delta_suffix == "$":
+                # Format currency delta with appropriate precision
+                if abs(delta) < 0.01 and delta != 0:
+                    formatted_delta = format_currency(delta, precision=4, show_decimals=True, compact=compact, strip_zeros=True)
+                elif abs(delta) < 1 and delta != 0:
+                    formatted_delta = format_currency(delta, precision=2, show_decimals=True, compact=compact)
+                else:
+                    formatted_delta = format_currency(delta, show_decimals=False, compact=compact, abbreviate=compact)
+                # Ensure plus sign for positive values
+                if delta > 0 and not str(formatted_delta).startswith('+'):
+                    formatted_delta = f"+{formatted_delta}"
             else:
-                if delta_suffix == "%":
-                    formatted_delta = format_percentage(delta)
+                # Add sign and suffix for other types
+                if delta > 0:
+                    formatted_delta = f"+{delta}{delta_suffix}"
                 else:
                     formatted_delta = f"{delta}{delta_suffix}"
+        
+        # Apply custom CSS if provided
+        if custom_css:
+            st.markdown(f"<style>{custom_css}</style>", unsafe_allow_html=True)
+        
+        # Apply custom styling for compact mode
+        if compact:
+            st.markdown("""
+            <style>
+            div[data-testid="stMetric"] > div:first-child {
+                margin-bottom: -0.5rem;
+            }
+            div[data-testid="stMetric"] > div:nth-child(2) {
+                font-size: 1.5rem;
+            }
+            div[data-testid="stMetric"] > div:nth-child(3) {
+                font-size: 0.8rem;
+            }
+            </style>
+            """, unsafe_allow_html=True)
+        
+        # Generate a modified title if hiding the label is requested
+        display_title = "" if hide_label else title
         
         # Display metric with delta
         if help_text:
             with st.container():
-                col1, col2 = st.columns([0.9, 0.1])
+                # Adjust column widths based on compact mode
+                col_ratio = [0.95, 0.05] if compact else [0.9, 0.1]
+                col1, col2 = st.columns(col_ratio)
                 with col1:
                     st.metric(
-                        label=title,
+                        label=display_title,
                         value=formatted_value,
-                        delta=formatted_delta
+                        delta=formatted_delta,
+                        delta_color="off" if not color_delta else "normal",
+                        help=debug_info if debug_info else None
                     )
                 with col2:
-                    st.markdown(f"<div style='margin-top: 30px'>{st.info('ℹ️')}</div>", unsafe_allow_html=True)
+                    # Adjust the info icon position based on compact mode
+                    margin_top = '15px' if compact else '30px'
+                    st.markdown(f"<div style='margin-top: {margin_top}'>{st.info('ℹ️')}</div>", unsafe_allow_html=True)
                     st.info(help_text)
         else:
             st.metric(
-                label=title,
+                label=display_title,
                 value=formatted_value,
-                delta=formatted_delta
+                delta=formatted_delta,
+                delta_color="off" if not color_delta else "normal",
+                help=debug_info if debug_info else None
             )
     else:
         # Display metric without delta
+        # Apply custom CSS if provided
+        if custom_css:
+            st.markdown(f"<style>{custom_css}</style>", unsafe_allow_html=True)
+        
+        # Apply custom styling for compact mode
+        if compact:
+            st.markdown("""
+            <style>
+            div[data-testid="stMetric"] > div:first-child {
+                margin-bottom: -0.5rem;
+            }
+            div[data-testid="stMetric"] > div:nth-child(2) {
+                font-size: 1.5rem;
+            }
+            </style>
+            """, unsafe_allow_html=True)
+        
+        # Generate a modified title if hiding the label is requested
+        display_title = "" if hide_label else title
+        
         if help_text:
             with st.container():
-                col1, col2 = st.columns([0.9, 0.1])
+                # Adjust column widths based on compact mode
+                col_ratio = [0.95, 0.05] if compact else [0.9, 0.1]
+                col1, col2 = st.columns(col_ratio)
                 with col1:
                     st.metric(
-                        label=title,
-                        value=formatted_value
+                        label=display_title,
+                        value=formatted_value,
+                        help=debug_info if debug_info else None
                     )
                 with col2:
-                    st.markdown(f"<div style='margin-top: 30px'>{st.info('ℹ️')}</div>", unsafe_allow_html=True)
+                    # Adjust the info icon position based on compact mode
+                    margin_top = '15px' if compact else '30px'
+                    st.markdown(f"<div style='margin-top: {margin_top}'>{st.info('ℹ️')}</div>", unsafe_allow_html=True)
                     st.info(help_text)
         else:
             st.metric(
-                label=title,
-                value=formatted_value
+                label=display_title,
+                value=formatted_value,
+                help=debug_info if debug_info else None
             )
 
-def display_metrics_row(metrics_dict, formatters=None, columns=None, help_texts=None):
+def display_metrics_row(metrics_dict, formatters=None, columns=None, help_texts=None, spacing=None, 
+                   auto_detect_formatters=True, column_widths=None, compact=False, delta_colors=True,
+                   debug_mode=False, custom_css=None, hide_labels=False, min_column_width=None,
+                   equal_height=True, vertical_spacing='10px'):
     """
-    Display a row of metrics.
+    Display a row of metrics with improved formatting and spacing.
 
     Parameters:
     -----------
@@ -108,49 +260,188 @@ def display_metrics_row(metrics_dict, formatters=None, columns=None, help_texts=
         Number of columns to use. If None, use the number of metrics.
     help_texts : dict, optional
         Dictionary of help texts for each metric
+    spacing : str, optional
+        CSS margin to add between metrics (e.g., '10px')
+    auto_detect_formatters : bool
+        Whether to automatically detect and apply formatters
+    column_widths : list, optional
+        Custom column widths (list of numbers that should add up to 1)
+    compact : bool
+        Whether to use a more compact display format
+    delta_colors : bool
+        Whether to color deltas (green for positive, red for negative)
+    debug_mode : bool
+        Whether to display debug information in tooltips
+    custom_css : str, optional
+        Custom CSS to apply to the metrics row
+    hide_labels : bool
+        Whether to hide metric labels (useful for compact displays)
+    min_column_width : int, optional
+        Minimum width in pixels for each column
+    equal_height : bool
+        Whether to enforce equal height for all metrics
+    vertical_spacing : str
+        CSS margin-bottom to add between metric rows (e.g., '10px')
     """
     # Determine number of columns
     num_metrics = len(metrics_dict)
     if columns is None:
-        columns = num_metrics
+        # In compact mode, we can display more columns
+        max_columns = 6 if compact else 4
+        columns = min(num_metrics, max_columns)  # Limit default based on mode
+    
+    # Ensure we don't try to create more columns than metrics
+    columns = min(columns, num_metrics)
+    
+    # Use custom column widths if provided
+    if column_widths and len(column_widths) >= columns:
+        cols = st.columns(column_widths[:columns])
+    else:
+        # Create evenly spaced columns for the metrics
+        cols = st.columns(columns)
 
     # Create default formatters and help texts if not provided
     if formatters is None:
         formatters = {}
 
-    # Apply default currency formatting for metrics with currency-related names
-    for key in metrics_dict.keys():
-        if key not in formatters:
-            is_currency = any(term in key.lower() for term in
-                            ['price', 'volume', 'amount', 'usd', 'value', 'cap', 'aum', 'assets'])
-            if is_currency:
-                formatters[key] = lambda x: format_currency(x, show_decimals=False)
+    # Auto-detect appropriate formatters based on metric names when enabled
+    if auto_detect_formatters:
+        # Define currency and percentage terms for better detection
+        currency_terms = ['price', 'volume', 'amount', 'usd', 'value', 'cap', 'aum', 'assets',
+                         'liquidation', 'interest', 'depth', 'bid', 'ask', 'spread', 'fund', 'flow',
+                         'cost', 'profit', 'revenue', 'balance', 'market', 'trade', 'size', 'notional']
+                         
+        percentage_terms = ['percent', 'change', 'rate', 'ratio', 'growth', '%', 'pct', 'fee', 'premium', 'discount',
+                           'yield', 'return', 'volatility', 'margin', 'allocation', 'weight', 'share', 'dominance']
+                           
+        # Create formatters where they don't already exist
+        for key in metrics_dict.keys():
+            if key not in formatters:
+                key_lower = key.lower()
+                
+                # Check if it's likely a currency value by key name
+                is_currency = any(term in key_lower for term in currency_terms) or key_lower.endswith('usd')
+                
+                # Check if it's likely a percentage value by key name
+                is_percentage = any(term in key_lower for term in percentage_terms) or key_lower.endswith('%') or key_lower.endswith('pct')
+                
+                # Check if it's likely a count/integer value by key name
+                is_count = any(term in key_lower for term in ['count', 'num', 'total', 'size', 'amount']) and not is_currency
+                
+                # Create appropriate formatter based on detected type
+                if is_currency:
+                    # For currency values, adapt formatting based on whether we're in compact mode
+                    if compact:
+                        # More compact display with abbreviations for large values
+                        formatters[key] = lambda x: format_currency(x, show_decimals=False, compact=True, abbreviate=True)
+                    else:
+                        # Regular display with no decimals for cleaner headline stats
+                        formatters[key] = lambda x: format_currency(x, show_decimals=False, compact=True, abbreviate=False)
+                elif is_percentage:
+                    # For percentage values, create a closure to capture proper precision
+                    # Standard percentage with trailing zeros stripped
+                    formatters[key] = lambda x: format_percentage(x, strip_zeros=True, auto_precision=True)
+                elif is_count:
+                    # For count values, format with commas but no decimals
+                    formatters[key] = lambda x: f"{int(x):,}" if isinstance(x, (int, float)) else str(x)
+                else:
+                    # Default formatter for other number types
+                    formatters[key] = lambda x: (f"{x:,.2f}" if isinstance(x, (int, float)) and x != int(x) else 
+                                              (f"{int(x):,}" if isinstance(x, (int, float)) else str(x)))
 
+    # Create default help texts if not provided
     if help_texts is None:
         help_texts = {key: None for key in metrics_dict}
 
-    # Create columns for the metrics
-    cols = st.columns(columns)
+    # Add spacing between metrics if requested
+    css_parts = []
+    if spacing:
+        css_parts.append(f"[data-testid=\"stMetric\"] {{ margin: {spacing}; }}")
+        
+    if equal_height:
+        css_parts.append("[data-testid=\"stMetric\"] { height: 100%; }")
+    
+    if compact:
+        css_parts.append("""
+        [data-testid="stMetric"] > div:first-child { /* Label */
+            font-size: 0.8rem !important;
+            margin-bottom: -0.5rem !important;
+        }
+        [data-testid="stMetric"] > div:nth-child(2) { /* Value */
+            font-size: 1.4rem !important;
+        }
+        [data-testid="stMetric"] > div:nth-child(3) { /* Delta */
+            font-size: 0.75rem !important;
+        }
+        """)
+    
+    if min_column_width:
+        css_parts.append(f"[data-testid=\"column\"] {{ min-width: {min_column_width}px; }}")
+    
+    # Add vertical spacing between metric rows
+    if vertical_spacing:
+        css_parts.append(f"[data-testid=\"stHorizontalBlock\"] {{ margin-bottom: {vertical_spacing}; }}")
+    
+    # Apply custom CSS if provided
+    if custom_css:
+        css_parts.append(custom_css)
+    
+    # Combine all CSS parts and apply them
+    if css_parts:
+        combined_css = "\n".join(css_parts)
+        st.markdown(f"<style>{combined_css}</style>", unsafe_allow_html=True)
 
-    # Display each metric in its column
+    # Display each metric in its column with proper formatting
     for i, (key, value) in enumerate(metrics_dict.items()):
         col_index = i % columns
+        
+        # Prepare debug info if debug mode is enabled
+        debug_info = None
+        if debug_mode:
+            if isinstance(value, dict) and 'value' in value:
+                debug_info = f"Value: {value['value']} ({type(value['value']).__name__})\nDelta: {value.get('delta')} ({type(value.get('delta')).__name__ if value.get('delta') is not None else 'None'})"
+            else:
+                debug_info = f"Value: {value} ({type(value).__name__})"
+        
         with cols[col_index]:
             if isinstance(value, dict) and 'value' in value:
+                # For value/delta dict format
+                delta_value = value.get('delta')
+                
+                # Determine appropriate delta_suffix
+                delta_suffix = value.get('delta_suffix', '%')
+                
+                # Check if this is a currency metric for proper delta formatting
+                if key in formatters:
+                    formatter_str = str(formatters[key])
+                    # If this is a currency formatter, use $ for delta
+                    if 'format_currency' in formatter_str or ('$' in formatter_str and any(term in formatter_str for term in ['compact', 'abbreviate', 'currency'])):
+                        delta_suffix = '$'
+                
+                # Display the metric with appropriate formatting
                 display_metric_card(
                     key,
                     value['value'],
-                    value.get('delta'),
-                    value.get('delta_suffix', '%'),
+                    delta_value,
+                    delta_suffix,
                     formatter=formatters.get(key),
-                    help_text=help_texts.get(key)
+                    help_text=help_texts.get(key),
+                    delta_formatter=value.get('delta_formatter'),
+                    compact=compact,
+                    color_delta=delta_colors,
+                    debug_info=debug_info,
+                    hide_label=hide_labels
                 )
             else:
+                # For direct value format
                 display_metric_card(
                     key,
                     value,
                     formatter=formatters.get(key),
-                    help_text=help_texts.get(key)
+                    help_text=help_texts.get(key),
+                    compact=compact,
+                    debug_info=debug_info,
+                    hide_label=hide_labels
                 )
 
 def display_kpi_metrics(df, category, title=None, cols=3):

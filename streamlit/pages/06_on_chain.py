@@ -54,12 +54,36 @@ def load_exchange_balance_data(crypto="BTC"):
         DataFrame containing exchange balance data or None if file not found
     """
     try:
-        file_path = f'/Users/felipeodonnell/Documents/Coding/Liquidity Report/izun-liquidity-report-v5/data/20250515/on_chain/api_exchange_balance_list_{crypto}.parquet'
+        # Import directly to access DATA_BASE_PATH
+        from utils.config import DATA_BASE_PATH
+        
+        # Get the latest data directory
+        from utils.data_loader import get_latest_data_directory
+        latest_dir = get_latest_data_directory()
+        
+        if not latest_dir:
+            st.error("No data directories found. Please check your data setup.")
+            return None
+        
+        # Extract just the directory name from latest_dir (which is a full path)
+        latest_dir_name = os.path.basename(latest_dir)
+            
+        # Construct path using DATA_BASE_PATH
+        file_path = os.path.join(DATA_BASE_PATH, latest_dir_name, 'on_chain', f'api_exchange_balance_list_{crypto}.parquet')
+        
+        logger.info(f"Looking for exchange balance data at: {file_path}")
+        
         if os.path.exists(file_path):
             df = pd.read_parquet(file_path)
             return df
         else:
             st.error(f"Exchange balance data file not found for {crypto} at: {file_path}")
+            # Try a fallback approach - direct hardcoded path for local testing
+            fallback_path = os.path.join("data", latest_dir_name, 'on_chain', f'api_exchange_balance_list_{crypto}.parquet')
+            if os.path.exists(fallback_path):
+                logger.info(f"Found data at fallback path: {fallback_path}")
+                df = pd.read_parquet(fallback_path)
+                return df
             return None
     except Exception as e:
         st.error(f"Error loading exchange balance data for {crypto}: {e}")

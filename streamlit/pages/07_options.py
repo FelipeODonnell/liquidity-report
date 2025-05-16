@@ -297,7 +297,7 @@ def render_options_info(data, asset, all_selected_assets=None, selected_exchange
 
             # Explanation
             st.markdown(f"""
-            ### Understanding {asset} Options Market
+            ### {asset} Options Market
 
             Options are financial derivatives that give the holder the right, but not the obligation, to buy (call) or sell (put) an asset at a predetermined price (strike price) within a specific time period.
 
@@ -628,7 +628,7 @@ def render_max_pain(data, asset, all_selected_assets=None, selected_exchanges=No
 
                 # Explanation
                 st.markdown("""
-                ### Understanding Max Pain
+                ### Max Pain
 
                 Max Pain is the price point where options traders would experience the maximum loss upon expiration:
 

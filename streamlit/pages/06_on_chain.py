@@ -339,9 +339,8 @@ def main():
     # Render sidebar
     render_sidebar()
     
-    # Page title and description
+    # Page title only
     st.title("Exchange Balances")
-    st.write("Analysis of cryptocurrency exchange balances and their changes over time")
     
     # Create tabs for each cryptocurrency
     tabs = st.tabs(CRYPTOCURRENCIES)
@@ -360,7 +359,7 @@ def main():
     
     # Add explanation of exchange balance significance
     st.markdown("""
-    ### Understanding Exchange Balance Data
+    ### Exchange Balance Data
     
     Exchange balance represents the total amount of cryptocurrency held on exchanges:
     

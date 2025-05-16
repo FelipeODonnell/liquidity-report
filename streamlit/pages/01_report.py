@@ -1679,9 +1679,8 @@ def main():
         # Render sidebar
         render_sidebar()
         
-        # Page title and description
+        # Page title only
         st.title(f"{APP_ICON} Crypto Liquidity Report")
-        st.write("Comprehensive analysis of market liquidity metrics across major crypto assets")
         
         # Display loading message
         with st.spinner("Loading dashboard data..."):

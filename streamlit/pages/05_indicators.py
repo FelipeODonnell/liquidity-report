@@ -206,7 +206,7 @@ def render_fear_greed_index(data, selected_time_range=None):
 
                     # Explanation
                     st.markdown("""
-                    ### Understanding the Fear & Greed Index
+                    ### Fear & Greed Index
 
                     The Fear & Greed Index measures market sentiment on a scale from 0 to 100:
 
@@ -383,7 +383,7 @@ def render_bitcoin_cycles(data, selected_time_range=None):
 
             # Explanation
             st.markdown("""
-            ### Understanding the 200-Week Moving Average
+            ### 200-Week Moving Average
 
             The 200-Week Moving Average is a key technical indicator for Bitcoin:
 
@@ -577,7 +577,7 @@ def render_bull_market_peak_indicator(df, title):
 
         # Explanation
         st.markdown("""
-        ### Understanding the Bull Market Peak Indicator
+        ### Bull Market Peak Indicator
 
         This indicator combines multiple metrics to help identify potential market cycle peaks:
 
@@ -681,7 +681,7 @@ def render_market_metrics(data):
 
                     # Explanation
                     st.markdown("""
-                    ### Understanding the Coinbase Premium Index
+                    ### Coinbase Premium Index
 
                     The Coinbase Premium Index shows the price difference between Coinbase Pro and Binance:
 
@@ -736,7 +736,7 @@ def render_market_metrics(data):
 
                     # Explanation
                     st.markdown("""
-                    ### Understanding the Relative Strength Index (RSI)
+                    ### Relative Strength Index (RSI)
 
                     RSI is a momentum oscillator that measures the speed and change of price movements:
 
@@ -897,7 +897,7 @@ def render_onchain_metrics(data):
 
                 # Explanation
                 st.markdown("""
-                ### Understanding Stablecoin Market Cap
+                ### Stablecoin Market Cap
 
                 Stablecoin market cap represents the total value of all stablecoins in circulation:
 
@@ -1021,7 +1021,7 @@ def render_bitcoin_metrics(data):
         
         # Explanation
         st.markdown("""
-        ### Understanding Bitcoin Profitable Days
+        ### Bitcoin Profitable Days
         
         The Bitcoin Profitable Days indicator shows the percentage of days where buying Bitcoin would have been profitable until today:
         

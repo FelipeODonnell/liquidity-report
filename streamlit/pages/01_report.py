@@ -8,6 +8,7 @@ import streamlit as st
 import pandas as pd
 import plotly.express as px
 import plotly.graph_objects as go
+from plotly.subplots import make_subplots
 from datetime import datetime, timedelta
 import os
 import sys
@@ -48,7 +49,7 @@ from utils.formatters import (
     format_timestamp,
     humanize_time_diff
 )
-from utils.config import APP_TITLE, APP_ICON, ASSET_COLORS, DEFAULT_ASSET, EXCHANGE_COLORS
+from utils.config import APP_TITLE, APP_ICON, ASSET_COLORS, DEFAULT_ASSET, EXCHANGE_COLORS, SUPPORTED_ASSETS
 
 # Set page config with title and icon
 st.set_page_config(
@@ -65,46 +66,72 @@ logger = logging.getLogger(__name__)
 # Set the current page for sidebar navigation
 st.session_state.current_page = 'report'
 
-def load_report_data():
+def load_report_data(assets=None):
     """
-    Load data for the report dashboard.
+    Load data for the report dashboard for one or more assets.
+    
+    Parameters:
+    -----------
+    assets : list, optional
+        List of assets to load data for. If None, loads data for the currently
+        selected asset from session state.
     
     Returns:
     --------
     dict
-        Dictionary containing all data needed for the dashboard
+        Dictionary containing all data needed for the dashboard, with nested
+        dictionaries for each asset
     """
-    data = {}
+    # Initialize master data dictionary
+    all_data = {}
     
     # Get the latest data directory
     latest_dir = get_latest_data_directory()
     
     if not latest_dir:
         st.error("No data directories found. Please check your data path.")
-        return data
+        return all_data
     
-    # Get selected asset from session state or use default
-    asset = st.session_state.get('selected_asset', DEFAULT_ASSET)
+    # Determine which assets to load
+    if assets is None:
+        # Get selected asset from session state or use default
+        single_asset = st.session_state.get('selected_asset', DEFAULT_ASSET)
+        assets_to_load = [single_asset]
+    else:
+        assets_to_load = assets
     
-    # Load trading volume data
-    data['taker_volume'] = load_data_for_category('futures', 'taker_buy_sell', asset)
+    # Load shared data (not asset-specific)
+    all_data['shared'] = {
+        'price': load_data_for_category('futures', 'market'),
+        'long_short': load_data_for_category('futures', 'long_short_ratio')
+    }
     
-    # Load open interest data
-    data['open_interest'] = load_data_for_category('futures', 'open_interest', asset)
+    # Load asset-specific data for each asset
+    for asset in assets_to_load:
+        asset_data = {}
+        
+        # Load trading volume data
+        asset_data['taker_volume'] = load_data_for_category('futures', 'taker_buy_sell', asset)
+        
+        # Load open interest data
+        asset_data['open_interest'] = load_data_for_category('futures', 'open_interest', asset)
+        
+        # Load order book data for bid-ask spread and depth
+        asset_data['order_book'] = load_data_for_category('futures', 'order_book', asset)
+        
+        # Load funding rate data
+        asset_data['funding_rate'] = load_data_for_category('futures', 'funding_rate', asset)
+        
+        # Load market data for exchange comparisons
+        asset_data['market'] = load_data_for_category('futures', 'market', asset)
+        
+        # Load liquidation data
+        asset_data['liquidation'] = load_data_for_category('futures', 'liquidation', asset)
+        
+        # Store asset data in the main dictionary
+        all_data[asset] = asset_data
     
-    # Load order book data for bid-ask spread and depth
-    data['order_book'] = load_data_for_category('futures', 'order_book', asset)
-    
-    # Load funding rate data
-    data['funding_rate'] = load_data_for_category('futures', 'funding_rate', asset)
-    
-    # Load market data for exchange comparisons
-    data['market'] = load_data_for_category('futures', 'market', asset)
-    
-    # Load price data
-    data['price'] = load_data_for_category('futures', 'market')
-    
-    return data
+    return all_data
 
 def normalize_funding_rate_data(funding_df, asset):
     """
@@ -250,7 +277,6 @@ def normalize_funding_rate_data(funding_df, asset):
             return pd.DataFrame()
             
     except Exception as e:
-        st.warning(f"Error processing funding rate data: {e}")
         logger.error(f"Error processing funding rate data: {e}")
         return pd.DataFrame()
 
@@ -317,7 +343,6 @@ def calculate_spreads_and_depth(orderbook_df, asset, price_levels=[0.01, 0.02, 0
         
         return processed_df
     except Exception as e:
-        st.warning(f"Error calculating spreads and depth: {e}")
         logger.error(f"Error calculating spreads and depth: {e}\n{traceback.format_exc()}")
         return pd.DataFrame()
 
@@ -385,8 +410,8 @@ def create_fallback_chart(title, message="No data available", height=400, sugges
         height=height,
         plot_bgcolor="#f9f9f9",
         paper_bgcolor="#f9f9f9",
-        xaxis=dict(visible=False),
-        yaxis=dict(visible=False)
+        xaxis=dict(visible=False, type="linear"),
+        yaxis=dict(visible=False, type="linear")
     )
     
     return apply_chart_theme(fig)
@@ -410,9 +435,9 @@ def extract_asset_volume_data(data, asset_list):
     assets_volume = {}
     
     for asset_name in asset_list:
-        for key in data.get('taker_volume', {}):
+        for key in data.get(asset_name, {}).get('taker_volume', {}):
             if 'history' in key.lower() and asset_name.lower() in key.lower():
-                asset_vol_df = data['taker_volume'][key]
+                asset_vol_df = data[asset_name]['taker_volume'][key]
                 if not asset_vol_df.empty:
                     try:
                         asset_vol_df = process_timestamps(asset_vol_df)
@@ -457,9 +482,9 @@ def extract_asset_oi_data(data, asset_list):
     assets_oi = {}
     
     for asset_name in asset_list:
-        for key in data.get('open_interest', {}):
+        for key in data.get(asset_name, {}).get('open_interest', {}):
             if 'exchange_list' in key.lower() and asset_name.lower() in key.lower():
-                asset_oi_df = data['open_interest'][key]
+                asset_oi_df = data[asset_name]['open_interest'][key]
                 if not asset_oi_df.empty and any(col in asset_oi_df.columns for col in ['open_interest_usd', 'open_interest']):
                     try:
                         # Determine which column to use
@@ -471,34 +496,434 @@ def extract_asset_oi_data(data, asset_list):
     
     return assets_oi
 
-def main():
-    """Main function to render the report dashboard."""
+def create_cross_asset_overview(all_data):
+    """
+    Create a cross-asset overview dashboard displaying comparative metrics.
     
-    # Render sidebar
-    render_sidebar()
+    Parameters:
+    -----------
+    all_data : dict
+        Dictionary containing data for all assets
+    """
+    # Extract price data
+    price_data = {}
+    latest_prices = {}
     
-    # Page title and description
-    st.title(f"{APP_ICON} Crypto Liquidity Report")
-    st.write("Comprehensive analysis of market liquidity metrics across major crypto assets")
+    price_history_df = None
+    for key in all_data.get('shared', {}).get('price', {}):
+        if 'ohlc_history' in key.lower():
+            price_history_df = all_data['shared']['price'][key]
+            # Process timestamps once
+            if not price_history_df.empty:
+                price_history_df = process_timestamps(price_history_df)
+                break
     
-    # Display loading message
-    with st.spinner("Loading dashboard data..."):
-        data = load_report_data()
+    if price_history_df is not None and not price_history_df.empty:
+        # Get latest prices for each asset if available
+        for asset in SUPPORTED_ASSETS:
+            try:
+                # Get latest market price data from pairs
+                for key in all_data.get(asset, {}).get('market', {}):
+                    if 'pairs_markets' in key.lower() and asset.lower() in key.lower():
+                        pairs_df = all_data[asset]['market'][key]
+                        if not pairs_df.empty and 'price_usd' in pairs_df.columns:
+                            # Calculate weighted average price
+                            price_col = 'price_usd'
+                            volume_col = None
+                            for vol_col in ['volume_usd', 'volume_24h_usd', 'volume']:
+                                if vol_col in pairs_df.columns:
+                                    volume_col = vol_col
+                                    break
+                                    
+                            if volume_col:
+                                # Use volume-weighted average
+                                valid_pairs = pairs_df[(pd.notna(pairs_df[price_col])) & (pd.notna(pairs_df[volume_col]))]
+                                if not valid_pairs.empty:
+                                    valid_pairs = valid_pairs[valid_pairs[volume_col] > 0]
+                                    if not valid_pairs.empty:
+                                        weighted_price = (valid_pairs[price_col] * valid_pairs[volume_col]).sum() / valid_pairs[volume_col].sum()
+                                        latest_prices[asset] = weighted_price
+                                        break
+                            
+                            # Fallback to simple average if no volume data
+                            if asset not in latest_prices:
+                                avg_price = pairs_df[price_col].mean()
+                                latest_prices[asset] = avg_price
+                                break
+            except Exception as e:
+                logger.error(f"Error getting latest price for {asset}: {e}")
     
-    # Removed data last updated reference
+    # Get trading volume data for all assets
+    volume_data = {}
+    for asset in SUPPORTED_ASSETS:
+        try:
+            if asset in all_data:
+                asset_volumes = extract_asset_volume_data(all_data, [asset])
+                if asset in asset_volumes:
+                    volume_data[asset] = asset_volumes[asset]
+        except Exception as e:
+            logger.error(f"Error extracting volume data for {asset}: {e}")
     
-    # Check if data is available
-    if not data:
-        st.error("No data available for the dashboard.")
-        return
+    # Get open interest data for all assets
+    oi_data = {}
+    for asset in SUPPORTED_ASSETS:
+        try:
+            if asset in all_data:
+                asset_oi = extract_asset_oi_data(all_data, [asset])
+                if asset in asset_oi:
+                    oi_data[asset] = asset_oi[asset]
+        except Exception as e:
+            logger.error(f"Error extracting OI data for {asset}: {e}")
     
-    # Get selected asset from session state or use default
-    asset = st.session_state.get('selected_asset', DEFAULT_ASSET)
+    # Get funding rate data for all assets
+    funding_data = {}
+    for asset in SUPPORTED_ASSETS:
+        try:
+            if asset in all_data:
+                # Find funding rate data in asset data
+                for key in all_data.get(asset, {}).get('funding_rate', {}):
+                    if 'exchange_list' in key.lower():
+                        funding_df = all_data[asset]['funding_rate'][key]
+                        if not funding_df.empty:
+                            # Normalize the funding rate data
+                            normalized_df = normalize_funding_rate_data(funding_df, asset)
+                            if not normalized_df.empty and 'funding_rate' in normalized_df.columns:
+                                # Calculate average funding rate
+                                avg_funding_rate = normalized_df['funding_rate'].mean()
+                                funding_data[asset] = avg_funding_rate * 100  # Convert to percentage
+                                break
+        except Exception as e:
+            logger.error(f"Error extracting funding rate data for {asset}: {e}")
     
+    # Create a comparative price chart
+    st.subheader("Price Comparison")
+    
+    if price_history_df is not None and not price_history_df.empty:
+        try:
+            # Create price comparison chart
+            fig = go.Figure()
+            
+            for asset in SUPPORTED_ASSETS:
+                if asset in latest_prices:
+                    fig.add_trace(go.Scatter(
+                        x=price_history_df['datetime'],
+                        y=price_history_df['close'],
+                        name=f"{asset}",
+                        line=dict(color=ASSET_COLORS.get(asset, '#3366CC'), width=2)
+                    ))
+            
+            # Update layout
+            fig.update_layout(
+                title="Asset Price Comparison",
+                xaxis_title=None,
+                yaxis_title="Price (USD)",
+                hovermode="x unified",
+                legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1)
+            )
+            
+            # Format y-axis and ensure linear scale
+            fig.update_yaxes(tickformat="$.2f", type="linear")
+            fig.update_xaxes(type="linear")
+            
+            display_chart(apply_chart_theme(fig))
+            
+            # Show latest prices in a metrics row
+            if latest_prices:
+                metrics = {}
+                formatters = {}
+                
+                for asset in SUPPORTED_ASSETS:
+                    if asset in latest_prices:
+                        metrics[f"{asset} Price"] = {
+                            "value": latest_prices[asset],
+                            "delta": None
+                        }
+                        formatters[f"{asset} Price"] = lambda x: format_currency(x, precision=2)
+                
+                if metrics:
+                    display_metrics_row(metrics, formatters)
+        except Exception as e:
+            logger.error(f"Error creating price comparison chart: {e}")
+            st.warning("Could not create price comparison chart.")
+    
+    # Create trading volume comparison
+    st.subheader("Trading Volume Comparison")
+    
+    # Extract volume data for bar chart
+    volume_comparison = []
+    for asset in SUPPORTED_ASSETS:
+        if asset in volume_data:
+            volume_comparison.append({
+                'Asset': asset,
+                'Volume (USD)': volume_data[asset]
+            })
+    
+    if volume_comparison:
+        volume_df = pd.DataFrame(volume_comparison)
+        
+        # Create bar chart
+        fig = px.bar(
+            volume_df,
+            x='Asset',
+            y='Volume (USD)',
+            title="24h Trading Volume by Asset",
+            color='Asset',
+            color_discrete_map=ASSET_COLORS,
+            text='Volume (USD)'
+        )
+        
+        # Update layout
+        fig.update_layout(
+            xaxis_title=None,
+            yaxis_title="Volume (USD)"
+        )
+        
+        # Format text labels and y-axis
+        fig.update_traces(
+            texttemplate='%{y:$.2s}',
+            textposition='outside'
+        )
+        fig.update_yaxes(tickformat="$.2s", type="linear")
+        fig.update_xaxes(type="linear")
+        
+        display_chart(apply_chart_theme(fig))
+        
+        # Create a table with exact values
+        volume_df = volume_df.sort_values('Volume (USD)', ascending=False)
+        create_formatted_table(volume_df, format_dict={
+            'Volume (USD)': lambda x: format_currency(x, abbreviate=True)
+        })
+    else:
+        st.info("No trading volume data available for comparison.")
+    
+    # Create open interest comparison
+    st.subheader("Open Interest Comparison")
+    
+    # Extract OI data for bar chart
+    oi_comparison = []
+    for asset in SUPPORTED_ASSETS:
+        if asset in oi_data:
+            oi_comparison.append({
+                'Asset': asset,
+                'Open Interest (USD)': oi_data[asset]
+            })
+    
+    if oi_comparison:
+        oi_df = pd.DataFrame(oi_comparison)
+        
+        # Create bar chart
+        fig = px.bar(
+            oi_df,
+            x='Asset',
+            y='Open Interest (USD)',
+            title="Open Interest by Asset",
+            color='Asset',
+            color_discrete_map=ASSET_COLORS,
+            text='Open Interest (USD)'
+        )
+        
+        # Update layout
+        fig.update_layout(
+            xaxis_title=None,
+            yaxis_title="Open Interest (USD)"
+        )
+        
+        # Format text labels and y-axis
+        fig.update_traces(
+            texttemplate='%{y:$.2s}',
+            textposition='outside'
+        )
+        fig.update_yaxes(tickformat="$.2s", type="linear")
+        fig.update_xaxes(type="linear")
+        
+        display_chart(apply_chart_theme(fig))
+        
+        # Create a table with exact values
+        oi_df = oi_df.sort_values('Open Interest (USD)', ascending=False)
+        create_formatted_table(oi_df, format_dict={
+            'Open Interest (USD)': lambda x: format_currency(x, abbreviate=True)
+        })
+    else:
+        st.info("No open interest data available for comparison.")
+    
+    # Create funding rate comparison
+    st.subheader("Funding Rate Comparison")
+    
+    # Extract funding rate data for bar chart
+    funding_comparison = []
+    for asset in SUPPORTED_ASSETS:
+        if asset in funding_data:
+            funding_comparison.append({
+                'Asset': asset,
+                'Funding Rate (%)': funding_data[asset]
+            })
+    
+    if funding_comparison:
+        funding_df = pd.DataFrame(funding_comparison)
+        
+        # Create bar chart with color based on value
+        fig = px.bar(
+            funding_df,
+            x='Asset',
+            y='Funding Rate (%)',
+            title="Current Funding Rates by Asset",
+            color='Funding Rate (%)',
+            color_continuous_scale='RdBu_r',
+            color_continuous_midpoint=0,
+            text='Funding Rate (%)'
+        )
+        
+        # Update layout
+        fig.update_layout(
+            xaxis_title=None,
+            yaxis_title="Funding Rate (%)"
+        )
+        
+        # Format text labels
+        fig.update_traces(
+            texttemplate='%{y:.3f}%',
+            textposition='outside'
+        )
+        
+        # Ensure linear scale on both axes
+        fig.update_yaxes(type="linear")
+        fig.update_xaxes(type="linear")
+        
+        # Add zero line
+        fig.add_hline(y=0, line_dash="dash", line_color="gray")
+        
+        display_chart(apply_chart_theme(fig))
+        
+        # Create a table with exact values and sentiment indicators
+        funding_df = funding_df.sort_values('Funding Rate (%)', ascending=False)
+        
+        # Add sentiment column
+        funding_df['Sentiment'] = funding_df['Funding Rate (%)'].apply(
+            lambda x: "Strongly Bullish" if x > 0.05 else 
+                      "Moderately Bullish" if x > 0.01 else
+                      "Neutral" if x >= -0.01 else
+                      "Moderately Bearish" if x >= -0.05 else
+                      "Strongly Bearish"
+        )
+        
+        create_formatted_table(funding_df, format_dict={
+            'Funding Rate (%)': lambda x: f"{x:.3f}%"
+        })
+    else:
+        st.info("No funding rate data available for comparison.")
+    
+    # Add a combined market health indicator
+    st.subheader("Market Health Overview")
+    
+    # Create metrics for market health
+    metrics = {}
+    
+    # Total ecosystem trading volume
+    total_volume = sum(volume_data.get(asset, 0) for asset in SUPPORTED_ASSETS)
+    if total_volume > 0:
+        metrics["Total Ecosystem Volume"] = {
+            "value": total_volume,
+            "delta": None
+        }
+    
+    # Total ecosystem open interest
+    total_oi = sum(oi_data.get(asset, 0) for asset in SUPPORTED_ASSETS)
+    if total_oi > 0:
+        metrics["Total Ecosystem OI"] = {
+            "value": total_oi,
+            "delta": None
+        }
+    
+    # Average funding rate
+    valid_funding_rates = [funding_data[asset] for asset in SUPPORTED_ASSETS if asset in funding_data]
+    if valid_funding_rates:
+        avg_funding = sum(valid_funding_rates) / len(valid_funding_rates)
+        sentiment = "bullish" if avg_funding > 0 else "bearish" if avg_funding < 0 else "neutral"
+        metrics["Avg Funding Rate"] = {
+            "value": avg_funding,
+            "delta": sentiment,
+            "delta_suffix": ""
+        }
+    
+    # Display metrics
+    formatters = {
+        "Total Ecosystem Volume": lambda x: format_currency(x, abbreviate=True),
+        "Total Ecosystem OI": lambda x: format_currency(x, abbreviate=True),
+        "Avg Funding Rate": lambda x: f"{x:.3f}%"
+    }
+    
+    if metrics:
+        display_metrics_row(metrics, formatters)
+        
+        # Add insights based on data
+        st.markdown("### Market Insights")
+        
+        # Generate insights based on the comparative data
+        insights = []
+        
+        # Volume distribution insight
+        if volume_comparison:
+            volume_df = pd.DataFrame(volume_comparison)
+            if not volume_df.empty:
+                highest_vol_asset = volume_df.loc[volume_df['Volume (USD)'].idxmax()]['Asset']
+                highest_vol = volume_df.loc[volume_df['Volume (USD)'].idxmax()]['Volume (USD)']
+                vol_dominance = (highest_vol / total_volume * 100) if total_volume > 0 else 0
+                insights.append(f"**Volume Distribution:** {highest_vol_asset} dominates with {vol_dominance:.1f}% of trading volume.")
+        
+        # OI distribution insight
+        if oi_comparison:
+            oi_df = pd.DataFrame(oi_comparison)
+            if not oi_df.empty:
+                highest_oi_asset = oi_df.loc[oi_df['Open Interest (USD)'].idxmax()]['Asset']
+                highest_oi = oi_df.loc[oi_df['Open Interest (USD)'].idxmax()]['Open Interest (USD)']
+                oi_dominance = (highest_oi / total_oi * 100) if total_oi > 0 else 0
+                insights.append(f"**Open Interest:** {highest_oi_asset} leads with {oi_dominance:.1f}% of total open interest.")
+        
+        # Funding rate insight
+        if valid_funding_rates:
+            max_funding_asset = None
+            max_funding = -9999
+            min_funding_asset = None
+            min_funding = 9999
+            
+            for asset in SUPPORTED_ASSETS:
+                if asset in funding_data:
+                    if funding_data[asset] > max_funding:
+                        max_funding = funding_data[asset]
+                        max_funding_asset = asset
+                    if funding_data[asset] < min_funding:
+                        min_funding = funding_data[asset]
+                        min_funding_asset = asset
+            
+            if max_funding_asset and min_funding_asset:
+                funding_spread = max_funding - min_funding
+                insights.append(f"**Funding Rate Spread:** {max_funding_asset} has the most bullish funding at {max_funding:.3f}%, while {min_funding_asset} has the most bearish at {min_funding:.3f}%, representing a spread of {funding_spread:.3f}%.")
+        
+        # Display insights
+        if insights:
+            for insight in insights:
+                st.markdown(insight)
+        else:
+            st.info("Insufficient data to generate cross-asset market insights.")
+    else:
+        st.info("Insufficient data to calculate market health metrics.")
+
+
+def display_asset_section(data, asset):
+    """
+    Display a comprehensive analysis section for a specific asset.
+    
+    Parameters:
+    -----------
+    data : dict
+        Dictionary containing data for the asset
+    asset : str
+        Asset symbol to analyze
+    """
     # ==============================
     # SECTION 1: Core Liquidity Metrics
     # ==============================
-    st.header("Core Liquidity Metrics & Analysis")
+    st.subheader("Core Liquidity Metrics")
     
     # Calculate key metrics for the header
     metrics = {}
@@ -508,10 +933,10 @@ def main():
     volume_history_df = None
     
     # Find volume data
-    for key in data.get('taker_volume', {}):
+    for key in data.get(asset, {}).get('taker_volume', {}):
         if 'history' in key.lower() and asset.lower() in key.lower():
             try:
-                temp_df = data['taker_volume'][key]
+                temp_df = data[asset]['taker_volume'][key]
                 if not temp_df.empty and all(col in temp_df.columns for col in ['taker_buy_volume_usd', 'taker_sell_volume_usd']):
                     volume_history_df = process_timestamps(temp_df)
                     if not volume_history_df.empty:
@@ -527,10 +952,10 @@ def main():
     oi_exchange_df = None
     
     # Find OI data
-    for key in data.get('open_interest', {}):
+    for key in data.get(asset, {}).get('open_interest', {}):
         if 'exchange_list' in key.lower() and asset.lower() in key.lower():
             try:
-                temp_df = data['open_interest'][key]
+                temp_df = data[asset]['open_interest'][key]
                 if not temp_df.empty:
                     # Normalize column names
                     oi_exchange_df = temp_df.copy()
@@ -556,10 +981,10 @@ def main():
     spreads_df = None
     
     # Find orderbook data
-    for key in data.get('order_book', {}):
+    for key in data.get(asset, {}).get('order_book', {}):
         if 'ask_bids_history' in key.lower() and asset.lower() in key.lower():
             try:
-                ob_df = data['order_book'][key]
+                ob_df = data[asset]['order_book'][key]
                 if not ob_df.empty and all(col in ob_df.columns for col in ['bids_usd', 'asks_usd']):
                     spreads_df = calculate_spreads_and_depth(ob_df, asset)
                     if not spreads_df.empty and 'spread_pct' in spreads_df.columns:
@@ -571,10 +996,10 @@ def main():
     
     # If we didn't find asset-specific orderbook data, try generic one
     if spreads_df is None or spreads_df.empty:
-        for key in data.get('order_book', {}):
+        for key in data.get(asset, {}).get('order_book', {}):
             if 'ask_bids_history' in key.lower() and 'aggregated' not in key.lower():
                 try:
-                    ob_df = data['order_book'][key]
+                    ob_df = data[asset]['order_book'][key]
                     if not ob_df.empty and all(col in ob_df.columns for col in ['bids_usd', 'asks_usd']):
                         spreads_df = calculate_spreads_and_depth(ob_df, asset)
                         if not spreads_df.empty and 'spread_pct' in spreads_df.columns:
@@ -585,19 +1010,19 @@ def main():
                     logger.error(f"Error processing generic orderbook data: {e}")
     
     # Get current funding rate
-    funding_rate = None
+    current_rate = None
     funding_exchange_df = None
     
     # Find funding rate data
-    for key in data.get('funding_rate', {}):
+    for key in data.get(asset, {}).get('funding_rate', {}):
         if 'exchange_list' in key.lower():
             try:
-                fr_df = data['funding_rate'][key]
+                fr_df = data[asset]['funding_rate'][key]
                 if not fr_df.empty:
                     # Process and normalize funding rate data
                     funding_exchange_df = normalize_funding_rate_data(fr_df, asset)
                     if not funding_exchange_df.empty and 'funding_rate' in funding_exchange_df.columns:
-                        funding_rate = funding_exchange_df['funding_rate'].mean()
+                        current_rate = funding_exchange_df['funding_rate'].mean() * 100  # Convert to percentage
                         break
             except Exception as e:
                 logger.error(f"Error processing funding rate data: {e}")
@@ -628,9 +1053,9 @@ def main():
             "delta": None
         }
     
-    if funding_rate is not None:
+    if current_rate is not None:
         metrics["Current Funding Rate"] = {
-            "value": funding_rate * 100,  # Convert to percentage
+            "value": current_rate,
             "delta": None,
             "delta_suffix": "%"
         }
@@ -646,7 +1071,7 @@ def main():
     
     # Display the metrics
     display_metrics_row(metrics, formatters)
-    
+
     # ==============================
     # SECTION 2: Trading Volume Analysis
     # ==============================
@@ -687,202 +1112,91 @@ def main():
                     hovermode="x unified"
                 )
                 
+                # Ensure linear scale on both axes
+                fig.update_yaxes(type="linear")
+                fig.update_xaxes(type="linear")
+                
                 display_chart(apply_chart_theme(fig))
             
             with col2:
                 # Get volume by exchange
                 volume_by_exchange = None
-                for key in data.get('market', {}):
+                for key in data.get(asset, {}).get('market', {}):
                     if 'pairs_markets' in key.lower() and asset.lower() in key.lower():
-                        market_df = data['market'][key]
+                        market_df = data[asset]['market'][key]
                         if not market_df.empty and 'volume_usd' in market_df.columns and 'exchange_name' in market_df.columns:
                             volume_by_exchange = market_df[['exchange_name', 'volume_usd']].sort_values('volume_usd', ascending=False)
                             break
                 
                 if volume_by_exchange is not None and not volume_by_exchange.empty:
-                    # Create pie chart for volume distribution using improved function
-                    # Filter out any "All" values that shouldn't be in the pie chart
-                    filtered_volume_data = volume_by_exchange[volume_by_exchange['exchange_name'] != "All"]
-                    
-                    # Import enhanced pie chart function
-                    from utils.chart_utils import create_enhanced_pie_chart
-                    
-                    fig = create_enhanced_pie_chart(
-                        df=filtered_volume_data,
-                        values_col='volume_usd',
-                        names_col='exchange_name',
+                    # Create pie chart for volume distribution
+                    fig = px.pie(
+                        volume_by_exchange.head(8),  # Top 8 exchanges
+                        values='volume_usd',
+                        names='exchange_name',
                         title=f"{asset} Trading Volume by Exchange",
-                        color_map=EXCHANGE_COLORS,
-                        exclude_names=["All"],
-                        show_top_n=8,  # Show top 8 exchanges
-                        min_percent=2.0,  # Group exchanges with less than 2% share
-                        height=400
+                        color_discrete_map=EXCHANGE_COLORS
                     )
                     
-                    display_chart(fig)
+                    fig.update_traces(textposition='inside', textinfo='percent+label')
+                    display_chart(apply_chart_theme(fig))
                 else:
                     display_chart(create_fallback_chart(f"{asset} Trading Volume by Exchange", "No exchange volume data available"))
-        else:
-            display_chart(create_fallback_chart(f"{asset} Futures Trading Volume", "Incomplete volume data available"))
+                    
+            # Buy/Sell ratio analysis
+            if 'taker_buy_volume_usd' in volume_history_df.columns and 'taker_sell_volume_usd' in volume_history_df.columns:
+                # Calculate buy/sell ratio
+                volume_history_df['buy_sell_ratio'] = volume_history_df['taker_buy_volume_usd'] / volume_history_df['taker_sell_volume_usd']
+                
+                # Create Buy/Sell ratio chart
+                fig = go.Figure()
+                
+                fig.add_trace(go.Scatter(
+                    x=volume_history_df['datetime'],
+                    y=volume_history_df['buy_sell_ratio'],
+                    name='Buy/Sell Ratio',
+                    line=dict(color=ASSET_COLORS.get(asset, '#3366CC'), width=2)
+                ))
+                
+                # Add horizontal line at 1 (equal buy/sell)
+                fig.add_shape(
+                    type="line",
+                    x0=volume_history_df['datetime'].min(),
+                    y0=1,
+                    x1=volume_history_df['datetime'].max(),
+                    y1=1,
+                    line=dict(color="gray", width=1, dash="dash"),
+                )
+                
+                # Update layout
+                fig.update_layout(
+                    title=f"{asset} Buy/Sell Volume Ratio",
+                    xaxis_title=None,
+                    yaxis_title="Ratio",
+                    hovermode="x unified"
+                )
+                
+                # Ensure linear scale on both axes
+                fig.update_yaxes(type="linear")
+                fig.update_xaxes(type="linear")
+                
+                display_chart(apply_chart_theme(fig))
+                
+                # Add interpretation
+                latest_ratio = volume_history_df['buy_sell_ratio'].iloc[-1] if not volume_history_df.empty else None
+                if latest_ratio is not None:
+                    sentiment = "bullish" if latest_ratio > 1 else "bearish"
+                    intensity = "strongly" if abs(latest_ratio - 1) > 0.3 else "moderately" if abs(latest_ratio - 1) > 0.1 else "slightly"
+                    
+                    st.markdown(f"""
+                    **Buy/Sell Ratio Interpretation:**
+                    - Current Ratio: {latest_ratio:.2f}
+                    - Market Sentiment: {intensity.capitalize()} {sentiment}
+                    - {'More buying pressure than selling pressure' if latest_ratio > 1 else 'More selling pressure than buying pressure'}
+                    """)
+                
     else:
         display_chart(create_fallback_chart(f"{asset} Futures Trading Volume", "No trading volume data available"))
-    
-    # Volume comparison across assets
-    st.subheader("Trading Volume Comparison Across Assets")
-    
-    # Add time range selection
-    col1, col2 = st.columns([2, 1])
-    with col2:
-        # Time range selector
-        time_range = st.selectbox(
-            "Select Time Range", 
-            ["24h", "7d", "30d", "90d"],
-            index=0,
-            help="Select time range for volume comparison"
-        )
-    
-    with col1:
-        # Add normalization option
-        normalize_method = st.radio(
-            "Visualization Type",
-            ["Absolute Volume", "Market Share (%)", "Volume Relative to BTC"],
-            horizontal=True,
-            index=0,
-            help="Choose how to visualize the volume comparison"
-        )
-    
-    # Get volume data for all major assets
-    try:
-        assets_volume = extract_asset_volume_data(data, ['BTC', 'ETH', 'SOL', 'XRP'])
-        
-        # Log success or issues with data
-        if assets_volume:
-            assets_found = list(assets_volume.keys())
-            logger.info(f"Successfully extracted volume data for assets: {assets_found}")
-            
-            # Check if we're missing any assets and log warning
-            missing_assets = [a for a in ['BTC', 'ETH', 'SOL', 'XRP'] if a not in assets_found]
-            if missing_assets:
-                logger.warning(f"Missing volume data for assets: {missing_assets}")
-        else:
-            logger.warning("No volume data extracted for any assets")
-            
-    except Exception as e:
-        logger.error(f"Error extracting volume data: {e}")
-        assets_volume = {}
-        st.error(f"Error loading volume comparison data: {e}")
-        
-    # Fallback suggestions if data is missing
-    volume_fallback_suggestions = [
-        "Check that volume data files exist in the data directory",
-        "Ensure asset-specific volume files follow the expected naming pattern",
-        "Verify that the volume data contains 'taker_buy_volume_usd' and 'taker_sell_volume_usd' columns"
-    ]
-    
-    if assets_volume:
-        # Create comparison bar chart
-        volume_comp_df = pd.DataFrame({
-            'Asset': list(assets_volume.keys()),
-            'Volume (USD)': list(assets_volume.values())
-        }).sort_values('Volume (USD)', ascending=False)
-        
-        # Apply normalization if selected
-        chart_title = f"{time_range} Trading Volume by Asset"
-        y_axis_title = "Volume (USD)"
-        
-        if normalize_method == "Market Share (%)":
-            # Calculate percentage of total
-            total_volume = volume_comp_df['Volume (USD)'].sum()
-            if total_volume > 0:
-                volume_comp_df['Volume (%)'] = (volume_comp_df['Volume (USD)'] / total_volume) * 100
-                y_column = 'Volume (%)'
-                chart_title = f"{time_range} Trading Volume Share by Asset"
-                y_axis_title = "Volume Share (%)"
-            else:
-                y_column = 'Volume (USD)'
-        elif normalize_method == "Volume Relative to BTC":
-            # Normalize relative to BTC
-            btc_volume = volume_comp_df.loc[volume_comp_df['Asset'] == 'BTC', 'Volume (USD)'].iloc[0] if 'BTC' in volume_comp_df['Asset'].values else 1
-            if btc_volume > 0:
-                volume_comp_df['Volume (Relative to BTC)'] = volume_comp_df['Volume (USD)'] / btc_volume
-                y_column = 'Volume (Relative to BTC)'
-                chart_title = f"{time_range} Trading Volume Relative to BTC"
-                y_axis_title = "Volume (BTC = 1)"
-            else:
-                y_column = 'Volume (USD)'
-        else:
-            y_column = 'Volume (USD)'
-        
-        # Create bar chart with the selected normalization
-        fig = px.bar(
-            volume_comp_df,
-            x='Asset',
-            y=y_column,
-            title=chart_title,
-            color='Asset',
-            color_discrete_map={
-                'BTC': ASSET_COLORS.get('BTC', '#F7931A'),
-                'ETH': ASSET_COLORS.get('ETH', '#627EEA'),
-                'SOL': ASSET_COLORS.get('SOL', '#00FFA3'),
-                'XRP': ASSET_COLORS.get('XRP', '#23292F')
-            },
-            text=y_column
-        )
-        
-        # Customize text display format based on normalization type
-        if normalize_method == "Market Share (%)":
-            fig.update_traces(texttemplate='%{text:.1f}%', textposition='outside')
-        elif normalize_method == "Volume Relative to BTC":
-            fig.update_traces(texttemplate='%{text:.2f}x', textposition='outside')
-        else:
-            fig.update_traces(texttemplate='%{text:$.2s}', textposition='outside')
-        
-        fig.update_layout(
-            xaxis_title=None,
-            yaxis_title=y_axis_title,
-            uniformtext_minsize=10,
-            uniformtext_mode='hide',
-            bargap=0.3
-        )
-        
-        # Format y-axis based on normalization type
-        if normalize_method == "Market Share (%)":
-            fig.update_yaxes(ticksuffix="%")
-        elif normalize_method == "Absolute Volume":
-            fig.update_yaxes(tickformat="$.2s")
-        
-        display_chart(apply_chart_theme(fig))
-        
-        # Add a table with exact values below the chart
-        st.markdown("### Detailed Volume Comparison")
-        
-        # Prepare detailed table
-        if normalize_method == "Market Share (%)" and 'Volume (%)' in volume_comp_df.columns:
-            table_df = volume_comp_df[['Asset', 'Volume (USD)', 'Volume (%)']].copy()
-            format_dict = {
-                'Volume (USD)': lambda x: format_currency(x, abbreviate=True),
-                'Volume (%)': lambda x: f"{x:.2f}%"
-            }
-        elif normalize_method == "Volume Relative to BTC" and 'Volume (Relative to BTC)' in volume_comp_df.columns:
-            table_df = volume_comp_df[['Asset', 'Volume (USD)', 'Volume (Relative to BTC)']].copy()
-            format_dict = {
-                'Volume (USD)': lambda x: format_currency(x, abbreviate=True),
-                'Volume (Relative to BTC)': lambda x: f"{x:.2f}x"
-            }
-        else:
-            table_df = volume_comp_df[['Asset', 'Volume (USD)']].copy()
-            format_dict = {
-                'Volume (USD)': lambda x: format_currency(x, abbreviate=True)
-            }
-        
-        # Display the table
-        create_formatted_table(table_df, format_dict=format_dict)
-    else:
-        display_chart(create_fallback_chart(
-            f"{time_range} Trading Volume by Asset", 
-            "No volume comparison data available",
-            suggestions=volume_fallback_suggestions
-        ))
     
     # ==============================
     # SECTION 3: Open Interest Analysis
@@ -891,18 +1205,18 @@ def main():
     
     # Open Interest history
     oi_history_df = None
-    for key in data.get('open_interest', {}):
+    for key in data.get(asset, {}).get('open_interest', {}):
         if 'aggregated_history' in key.lower() and asset.lower() in key.lower():
-            temp_df = data['open_interest'][key]
+            temp_df = data[asset]['open_interest'][key]
             if not temp_df.empty:
                 oi_history_df = process_timestamps(temp_df)
                 break
     
     # If asset-specific OI history not found, try to find any OI history data
     if oi_history_df is None or oi_history_df.empty:
-        for key in data.get('open_interest', {}):
+        for key in data.get(asset, {}).get('open_interest', {}):
             if 'history' in key.lower() and 'ohlc' in key.lower():
-                temp_df = data['open_interest'][key]
+                temp_df = data[asset]['open_interest'][key]
                 if not temp_df.empty:
                     # If we have a symbol column, filter for the asset
                     if 'symbol' in temp_df.columns:
@@ -914,17 +1228,12 @@ def main():
     
     # Price data for overlay
     price_history_df = None
-    for key in data.get('price', {}):
+    for key in data.get('shared', {}).get('price', {}):
         if 'ohlc_history' in key.lower():
-            temp_df = data['price'][key]
+            temp_df = data['shared']['price'][key]
             if not temp_df.empty:
-                # If we have a symbol column, filter for the asset
-                if 'symbol' in temp_df.columns:
-                    temp_df = temp_df[temp_df['symbol'].str.contains(asset, case=False, na=False)]
-                
-                if not temp_df.empty:
-                    price_history_df = process_timestamps(temp_df)
-                    break
+                price_history_df = process_timestamps(temp_df)
+                break
     
     # Create two columns for OI charts
     col1, col2 = st.columns([3, 1])
@@ -960,7 +1269,8 @@ def main():
                         yaxis2=dict(
                             title=f"{asset} Price (USD)",
                             overlaying="y",
-                            side="right"
+                            side="right",
+                            type="linear"
                         )
                     )
                 
@@ -972,11 +1282,11 @@ def main():
                     hovermode="x unified"
                 )
                 
-                display_chart(apply_chart_theme(fig))
+                # Ensure linear scale on both axes
+                fig.update_yaxes(type="linear")
+                fig.update_xaxes(type="linear")
                 
-                # Set defaults in session state for backward compatibility
-                st.session_state.oi_history_time_range = 'All'
-                st.session_state.selected_time_range = 'All'
+                display_chart(apply_chart_theme(fig))
             else:
                 display_chart(create_fallback_chart(f"{asset} Open Interest History", "Incomplete open interest data"))
         else:
@@ -995,971 +1305,320 @@ def main():
             if oi_col and 'exchange_name' in oi_exchange_df.columns:
                 oi_by_exchange = oi_exchange_df[['exchange_name', oi_col]].sort_values(oi_col, ascending=False)
                 
-                # Filter out any "All" values
-                filtered_oi_data = oi_by_exchange[oi_by_exchange['exchange_name'] != "All"]
-                
-                fig = create_pie_chart(
-                    df=filtered_oi_data,
-                    values_col=oi_col,
-                    names_col='exchange_name',
+                fig = px.pie(
+                    oi_by_exchange.head(8),  # Top 8 exchanges
+                    values=oi_col,
+                    names='exchange_name',
                     title=f"{asset} Open Interest by Exchange",
-                    color_map=EXCHANGE_COLORS,
-                    exclude_names=["All"],
-                    show_top_n=8,  # Show top 8 exchanges
-                    min_percent=2.0,  # Group exchanges with less than 2% share
-                    height=400
+                    color_discrete_map=EXCHANGE_COLORS
                 )
                 
-                display_chart(fig)
+                fig.update_traces(textposition='inside', textinfo='percent+label')
+                display_chart(apply_chart_theme(fig))
             else:
                 display_chart(create_fallback_chart(f"{asset} Open Interest by Exchange", "Incomplete exchange data"))
         else:
             display_chart(create_fallback_chart(f"{asset} Open Interest by Exchange", "No exchange open interest data available"))
     
-    # OI Comparison across assets
-    st.subheader("Open Interest Comparison Across Assets")
-    
-    # Get OI data for all major assets
-    assets_oi = extract_asset_oi_data(data, ['BTC', 'ETH', 'SOL', 'XRP'])
-    
-    if assets_oi:
-        # Create comparison bar chart
-        oi_comp_df = pd.DataFrame({
-            'Asset': list(assets_oi.keys()),
-            'Open Interest (USD)': list(assets_oi.values())
-        }).sort_values('Open Interest (USD)', ascending=False)
-        
-        fig = px.bar(
-            oi_comp_df,
-            x='Asset',
-            y='Open Interest (USD)',
-            title="Open Interest by Asset",
-            color='Asset',
-            color_discrete_map={
-                'BTC': ASSET_COLORS.get('BTC', '#F7931A'),
-                'ETH': ASSET_COLORS.get('ETH', '#627EEA'),
-                'SOL': ASSET_COLORS.get('SOL', '#00FFA3'),
-                'XRP': ASSET_COLORS.get('XRP', '#23292F')
-            }
-        )
-        
-        fig.update_layout(
-            xaxis_title=None,
-            yaxis_title="Open Interest (USD)"
-        )
-        
-        # Format y-axis
-        fig.update_yaxes(tickformat="$.2s")
-        
-        display_chart(apply_chart_theme(fig))
-    else:
-        display_chart(create_fallback_chart("Open Interest by Asset", "No open interest comparison data available"))
-    
     # ==============================
-    # SECTION 4: Bid-Ask Spread Analysis
+    # SECTION 4: Liquidation Analysis
     # ==============================
-    st.subheader("Bid-Ask Spread Analysis")
+    st.subheader("Liquidation Analysis")
     
-    if spreads_df is not None and not spreads_df.empty and 'spread_pct' in spreads_df.columns:
-        # Create two columns for spread charts
-        col1, col2 = st.columns(2)
-        
-        with col1:
-            # Create time series of spread percentage
+    # Get liquidation data
+    liquidation_df = None
+    for key in data.get(asset, {}).get('liquidation', {}):
+        if 'history' in key.lower() and asset.lower() in key.lower():
+            temp_df = data[asset]['liquidation'][key]
+            if not temp_df.empty:
+                liquidation_df = process_timestamps(temp_df)
+                break
+    
+    # Check and process liquidation data
+    valid_liquidation_data = False
+    if liquidation_df is not None and not liquidation_df.empty:
+        # Check if we have the required columns
+        required_cols = ['aggregated_long_liquidation_usd', 'aggregated_short_liquidation_usd']
+        if all(col in liquidation_df.columns for col in required_cols):
+            valid_liquidation_data = True
+            
+            # Create stacked bar chart of liquidations
             fig = go.Figure()
             
-            fig.add_trace(go.Scatter(
-                x=spreads_df['datetime'],
-                y=spreads_df['spread_pct'],
-                name="Spread Percentage",
-                line=dict(color='#3366CC', width=2)
+            fig.add_trace(go.Bar(
+                x=liquidation_df['datetime'],
+                y=liquidation_df['aggregated_long_liquidation_usd'],
+                name='Long Liquidations',
+                marker_color='red'
+            ))
+            
+            fig.add_trace(go.Bar(
+                x=liquidation_df['datetime'],
+                y=liquidation_df['aggregated_short_liquidation_usd'],
+                name='Short Liquidations',
+                marker_color='green'
             ))
             
             # Update layout
             fig.update_layout(
-                title=f"{asset} Bid-Ask Spread Percentage",
+                title=f"{asset} Liquidation History",
+                barmode='stack',
                 xaxis_title=None,
-                yaxis_title="Spread (%)",
+                yaxis_title="Liquidation Volume (USD)",
                 hovermode="x unified"
             )
             
+            # Format y-axis with linear scale
+            fig.update_yaxes(tickformat="$.2s", type="linear")
+            fig.update_xaxes(type="linear")
+            
             display_chart(apply_chart_theme(fig))
             
-            # Add basic spread statistics
-            spread_stats = {
-                'Current': spreads_df['spread_pct'].iloc[-1],
-                'Average': spreads_df['spread_pct'].mean(),
-                'Min': spreads_df['spread_pct'].min(),
-                'Max': spreads_df['spread_pct'].max()
-            }
+            # Calculate liquidation statistics
+            total_long_liq = liquidation_df['aggregated_long_liquidation_usd'].sum()
+            total_short_liq = liquidation_df['aggregated_short_liquidation_usd'].sum()
+            total_liq = total_long_liq + total_short_liq
             
-            st.markdown("### Spread Statistics")
-            stats_cols = st.columns(4)
+            # Display liquidation metrics
+            liq_cols = st.columns(3)
             
-            for i, (label, value) in enumerate(spread_stats.items()):
-                with stats_cols[i]:
-                    st.metric(label, f"{value:.3f}%")
-        
-        with col2:
-            # Create time series of market depth
-            if 'bid_depth' in spreads_df.columns and 'ask_depth' in spreads_df.columns:
-                fig = go.Figure()
+            with liq_cols[0]:
+                st.metric("Total Liquidations", format_currency(total_liq, abbreviate=True))
                 
-                fig.add_trace(go.Scatter(
-                    x=spreads_df['datetime'],
-                    y=spreads_df['bid_depth'],
-                    name="Bid Depth",
-                    line=dict(color='green', width=2)
-                ))
+            with liq_cols[1]:
+                st.metric("Long Liquidations", format_currency(total_long_liq, abbreviate=True))
                 
-                fig.add_trace(go.Scatter(
-                    x=spreads_df['datetime'],
-                    y=spreads_df['ask_depth'],
-                    name="Ask Depth",
-                    line=dict(color='red', width=2)
-                ))
+            with liq_cols[2]:
+                st.metric("Short Liquidations", format_currency(total_short_liq, abbreviate=True))
+            
+            # Create liquidation ratio analysis
+            liquidation_df['long_short_ratio'] = liquidation_df['aggregated_long_liquidation_usd'] / liquidation_df['aggregated_short_liquidation_usd'].replace(0, np.nan)
+            
+            # Add liquidation to price chart if price data available
+            if price_history_df is not None and not price_history_df.empty:
+                # Create a subplot with shared x-axis
+                fig = make_subplots(
+                    rows=2, 
+                    cols=1,
+                    shared_xaxes=True,
+                    vertical_spacing=0.1,
+                    subplot_titles=(f"{asset} Price", "Liquidation Volume")
+                )
+                
+                # Add price line to first subplot
+                fig.add_trace(
+                    go.Scatter(
+                        x=price_history_df['datetime'],
+                        y=price_history_df['close'],
+                        name=f"{asset} Price",
+                        line=dict(color=ASSET_COLORS.get(asset, '#3366CC'), width=2)
+                    ),
+                    row=1, col=1
+                )
+                
+                # Add liquidation bars to second subplot
+                fig.add_trace(
+                    go.Bar(
+                        x=liquidation_df['datetime'],
+                        y=liquidation_df['aggregated_long_liquidation_usd'],
+                        name='Long Liquidations',
+                        marker_color='red'
+                    ),
+                    row=2, col=1
+                )
+                
+                fig.add_trace(
+                    go.Bar(
+                        x=liquidation_df['datetime'],
+                        y=liquidation_df['aggregated_short_liquidation_usd'],
+                        name='Short Liquidations',
+                        marker_color='green'
+                    ),
+                    row=2, col=1
+                )
                 
                 # Update layout
                 fig.update_layout(
-                    title=f"{asset} Order Book Depth",
-                    xaxis_title=None,
-                    yaxis_title="Depth (USD)",
-                    hovermode="x unified"
-                )
-                
-                # Format y-axis
-                fig.update_yaxes(tickformat="$.2s")
-                
-                display_chart(apply_chart_theme(fig))
-                
-                # Add depth statistics
-                depth_stats = {
-                    'Total Depth': spreads_df['total_depth'].iloc[-1],
-                    'Bid Depth': spreads_df['bid_depth'].iloc[-1],
-                    'Ask Depth': spreads_df['ask_depth'].iloc[-1],
-                    'Bid/Ask Ratio': spreads_df['bid_depth'].iloc[-1] / spreads_df['ask_depth'].iloc[-1] if spreads_df['ask_depth'].iloc[-1] != 0 else 0
-                }
-                
-                st.markdown("### Depth Statistics")
-                depth_stats_cols = st.columns(4)
-                
-                with depth_stats_cols[0]:
-                    st.metric("Total Depth", format_currency(depth_stats['Total Depth'], abbreviate=True))
-                
-                with depth_stats_cols[1]:
-                    st.metric("Bid Depth", format_currency(depth_stats['Bid Depth'], abbreviate=True))
-                
-                with depth_stats_cols[2]:
-                    st.metric("Ask Depth", format_currency(depth_stats['Ask Depth'], abbreviate=True))
-                
-                with depth_stats_cols[3]:
-                    st.metric("Bid/Ask Ratio", f"{depth_stats['Bid/Ask Ratio']:.2f}")
-            else:
-                display_chart(create_fallback_chart(f"{asset} Order Book Depth", "No order book depth data available"))
-    else:
-        col1, col2 = st.columns(2)
-        with col1:
-            display_chart(create_fallback_chart(f"{asset} Bid-Ask Spread Percentage", "No bid-ask spread data available"))
-        with col2:
-            display_chart(create_fallback_chart(f"{asset} Order Book Depth", "No order book depth data available"))
-    
-    # ==============================
-    # SECTION 5: Funding Rate Analysis
-    # ==============================
-    st.subheader("Funding Rate Dynamics")
-    
-    # Get funding rate history data
-    funding_history_df = None
-    funding_type = None
-    funding_type_display = ""
-    funding_data_files_checked = []
-    
-    try:
-        # First try to load the OHLC history data
-        for key in data.get('funding_rate', {}):
-            if 'ohlc_history' in key.lower():
-                funding_data_files_checked.append(key)
-                temp_df = data['funding_rate'][key]
-                if not temp_df.empty:
-                    # Process the data to convert strings to numeric and handle timestamps
-                    funding_history_df = process_timestamps(temp_df)
-                    
-                    # Convert OHLC columns to numeric
-                    for col in ['open', 'high', 'low', 'close']:
-                        if col in funding_history_df.columns:
-                            funding_history_df[col] = pd.to_numeric(funding_history_df[col], errors='coerce')
-                    
-                    funding_type = "general"
-                    funding_type_display = "General"
-                    logger.info(f"Found general funding rate OHLC history data with shape {funding_history_df.shape}")
-                    break
-                else:
-                    logger.warning(f"Found empty funding rate OHLC history data file: {key}")
-        
-        # If we didn't find general funding rate history, try asset-specific ones
-        if funding_history_df is None or funding_history_df.empty:
-            # Try OI-weighted funding rate data
-            for key in data.get('funding_rate', {}):
-                if 'oi_weight' in key.lower() and asset.lower() in key.lower():
-                    funding_data_files_checked.append(key)
-                    temp_df = data['funding_rate'][key]
-                    if not temp_df.empty:
-                        funding_history_df = process_timestamps(temp_df)
-                        
-                        # Convert OHLC columns to numeric
-                        for col in ['open', 'high', 'low', 'close']:
-                            if col in funding_history_df.columns:
-                                funding_history_df[col] = pd.to_numeric(funding_history_df[col], errors='coerce')
-                        
-                        funding_type = "oi_weighted"
-                        funding_type_display = "OI-Weighted"
-                        logger.info(f"Found OI-weighted funding rate history for {asset} with shape {funding_history_df.shape}")
-                        break
-                    else:
-                        logger.warning(f"Found empty OI-weighted funding rate data file: {key}")
-            
-            # If still not found, try volume-weighted funding rate data
-            if funding_history_df is None or funding_history_df.empty:
-                for key in data.get('funding_rate', {}):
-                    if 'vol_weight' in key.lower() and asset.lower() in key.lower():
-                        funding_data_files_checked.append(key)
-                        temp_df = data['funding_rate'][key]
-                        if not temp_df.empty:
-                            funding_history_df = process_timestamps(temp_df)
-                            
-                            # Convert OHLC columns to numeric
-                            for col in ['open', 'high', 'low', 'close']:
-                                if col in funding_history_df.columns:
-                                    funding_history_df[col] = pd.to_numeric(funding_history_df[col], errors='coerce')
-                            
-                            funding_type = "volume_weighted"
-                            funding_type_display = "Volume-Weighted"
-                            logger.info(f"Found volume-weighted funding rate history for {asset} with shape {funding_history_df.shape}")
-                            break
-                        else:
-                            logger.warning(f"Found empty volume-weighted funding rate data file: {key}")
-        
-        # Log summary of data loading process
-        if funding_history_df is not None and not funding_history_df.empty:
-            logger.info(f"Successfully loaded {funding_type_display} funding rate data with {len(funding_history_df)} rows")
-        else:
-            logger.warning(f"Could not find valid funding rate data. Checked files: {funding_data_files_checked}")
-    
-    except Exception as e:
-        logger.error(f"Error loading funding rate data: {e}")
-        st.error(f"Error loading funding rate data: {e}")
-    
-    # Fallback suggestions if data is missing
-    funding_rate_fallback_suggestions = [
-        "Check that funding rate data files exist in the funding_rate directory",
-        "Ensure asset-specific funding rate files follow the expected naming pattern",
-        "Verify that the funding rate data contains OHLC columns with numeric values",
-        f"Files checked: {', '.join(funding_data_files_checked)}"
-    ]
-    
-    # If we have funding rate data, calculate moving averages
-    if funding_history_df is not None and not funding_history_df.empty:
-        # Determine which column to use
-        rate_col = 'close' if 'close' in funding_history_df.columns else 'rate' if 'rate' in funding_history_df.columns else 'funding_rate'
-        
-        if rate_col in funding_history_df.columns:
-            # Calculate moving averages
-            funding_history_df['7d_ma'] = funding_history_df[rate_col].rolling(window=7).mean()
-            funding_history_df['30d_ma'] = funding_history_df[rate_col].rolling(window=30).mean()
-            logger.info(f"Calculated moving averages for funding rate data")
-    
-    # Add time period selector
-    time_period = st.radio(
-        "Time Period",
-        ["All Time", "Last 30 Days", "Last 90 Days", "Last Year"],
-        horizontal=True,
-        index=1
-    )
-    
-    # Filter data based on selected time period
-    if funding_history_df is not None and not funding_history_df.empty and 'datetime' in funding_history_df.columns:
-        today = datetime.now()
-        if time_period == "Last 30 Days":
-            cutoff_date = today - timedelta(days=30)
-            filtered_funding_df = funding_history_df[funding_history_df['datetime'] >= cutoff_date]
-        elif time_period == "Last 90 Days":
-            cutoff_date = today - timedelta(days=90)
-            filtered_funding_df = funding_history_df[funding_history_df['datetime'] >= cutoff_date]
-        elif time_period == "Last Year":
-            cutoff_date = today - timedelta(days=365)
-            filtered_funding_df = funding_history_df[funding_history_df['datetime'] >= cutoff_date]
-        else:
-            filtered_funding_df = funding_history_df
-            
-        # If filtering returned an empty dataframe, use the original one
-        if filtered_funding_df.empty:
-            filtered_funding_df = funding_history_df
-            st.warning(f"No data available for the selected time period. Showing all available data.")
-    else:
-        filtered_funding_df = None
-    
-    # Display funding rate analysis
-    col1, col2 = st.columns(2)
-    
-    with col1:
-        if filtered_funding_df is not None and not filtered_funding_df.empty:
-            # Check if we have the required columns
-            if 'datetime' in filtered_funding_df.columns and any(col in filtered_funding_df.columns for col in ['close', 'rate', 'funding_rate']):
-                fig = go.Figure()
-                
-                # Determine which column to use
-                rate_col = 'close' if 'close' in filtered_funding_df.columns else 'rate' if 'rate' in filtered_funding_df.columns else 'funding_rate'
-                
-                # Add main funding rate line
-                fig.add_trace(go.Scatter(
-                    x=filtered_funding_df['datetime'],
-                    y=filtered_funding_df[rate_col] * 100,  # Convert to percentage
-                    name="Funding Rate",
-                    line=dict(color=ASSET_COLORS.get(asset, '#3366CC'), width=2)
-                ))
-                
-                # Add moving averages if available
-                if '7d_ma' in filtered_funding_df.columns:
-                    fig.add_trace(go.Scatter(
-                        x=filtered_funding_df['datetime'],
-                        y=filtered_funding_df['7d_ma'] * 100,  # Convert to percentage
-                        name="7-Day MA",
-                        line=dict(color='orange', width=1.5, dash='dash')
-                    ))
-                
-                if '30d_ma' in filtered_funding_df.columns:
-                    fig.add_trace(go.Scatter(
-                        x=filtered_funding_df['datetime'],
-                        y=filtered_funding_df['30d_ma'] * 100,  # Convert to percentage
-                        name="30-Day MA",
-                        line=dict(color='red', width=1.5, dash='dot')
-                    ))
-                
-                # Add horizontal line at zero
-                fig.add_shape(
-                    type="line",
-                    x0=filtered_funding_df['datetime'].min(),
-                    y0=0,
-                    x1=filtered_funding_df['datetime'].max(),
-                    y1=0,
-                    line=dict(
-                        color="gray",
-                        width=1,
-                        dash="dash",
-                    )
-                )
-                
-                # Create title based on funding type
-                title_suffix = ""
-                if funding_type == "oi_weighted":
-                    title_suffix = " (OI-Weighted)"
-                elif funding_type == "volume_weighted":
-                    title_suffix = " (Volume-Weighted)"
-                
-                # Update layout
-                fig.update_layout(
-                    title=f"{asset} Funding Rate History{title_suffix}",
-                    xaxis_title=None,
-                    yaxis_title="Funding Rate (%)",
+                    title=f"{asset} Price and Liquidations",
+                    height=600,
                     hovermode="x unified",
+                    barmode='stack',
                     legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1)
                 )
                 
+                # Format axes
+                fig.update_yaxes(title_text="Price (USD)", row=1, col=1)
+                fig.update_yaxes(title_text="Liquidation Volume (USD)", row=2, col=1)
+                fig.update_xaxes(title_text=None, row=2, col=1)
+                
+                # Format y-axis with linear scale
+                fig.update_yaxes(tickformat="$.2f", type="linear", row=1, col=1)
+                fig.update_yaxes(tickformat="$.2s", type="linear", row=2, col=1)
+                fig.update_xaxes(type="linear", row=1, col=1)
+                fig.update_xaxes(type="linear", row=2, col=1)
+                
                 display_chart(apply_chart_theme(fig))
-            else:
-                display_chart(create_fallback_chart(
-                f"{asset} Funding Rate History", 
-                "Incomplete funding rate data - Missing required columns",
-                suggestions=funding_rate_fallback_suggestions
-            ))
-        else:
-            display_chart(create_fallback_chart(
-                f"{asset} Funding Rate History", 
-                "No funding rate history data available",
-                suggestions=funding_rate_fallback_suggestions
-            ))
-    
-    with col2:
-        # Funding Rate Interpretation
-        st.markdown("### Funding Rate Interpretation")
         
-        # Calculate current funding rate stats
-        current_rate = None
-        avg_rate = None
-        volatility = None
-        
-        if filtered_funding_df is not None and not filtered_funding_df.empty:
-            rate_col = 'close' if 'close' in filtered_funding_df.columns else 'rate' if 'rate' in filtered_funding_df.columns else 'funding_rate'
-            if rate_col in filtered_funding_df.columns:
-                current_rate = filtered_funding_df[rate_col].iloc[-1] * 100 if len(filtered_funding_df) > 0 else None
-                avg_rate = filtered_funding_df[rate_col].mean() * 100 if len(filtered_funding_df) > 0 else None
-                # Calculate volatility (standard deviation)
-                volatility = filtered_funding_df[rate_col].std() * 100 if len(filtered_funding_df) > 0 else None
-        elif funding_rate is not None:
-            current_rate = funding_rate * 100
-        
-        # Determine market sentiment
-        if current_rate is not None:
-            if current_rate > 0.05:
-                sentiment = "Strongly Bullish"
-                sentiment_color = "green"
-            elif current_rate > 0.01:
-                sentiment = "Moderately Bullish"
-                sentiment_color = "lightgreen"
-            elif current_rate >= -0.01:
-                sentiment = "Neutral"
-                sentiment_color = "gray"
-            elif current_rate >= -0.05:
-                sentiment = "Moderately Bearish"
-                sentiment_color = "lightcoral"
-            else:
-                sentiment = "Strongly Bearish"
-                sentiment_color = "red"
-            
-            st.markdown(f"**Current Market Sentiment:** <span style='color:{sentiment_color}'>{sentiment}</span>", unsafe_allow_html=True)
-            
-            # Add explanation of what funding rate means
-            st.markdown("""
-            **Funding Rate Significance:**
-            - **Positive Rate:** Longs pay shorts; indicates bullish sentiment
-            - **Negative Rate:** Shorts pay longs; indicates bearish sentiment
-            - **High Absolute Values:** Potential market extremes or imbalances
-            
-            **Trading Implications:**
-            - High positive rates may signal overheated market conditions
-            - High negative rates often occur during market capitulation
-            - Extreme rates can precede mean reversion or short-term reversals
-            - Moving averages show trend direction and momentum
-            """)
-            
-            # Display key stats
-            stats_cols = st.columns(2)
-            
-            with stats_cols[0]:
-                st.metric("Current Rate", f"{current_rate:.3f}%")
-                
-                if avg_rate is not None:
-                    st.metric("Historical Average", f"{avg_rate:.3f}%")
-                else:
-                    st.metric("Historical Average", "N/A")
-            
-            with stats_cols[1]:
-                if volatility is not None:
-                    st.metric("Rate Volatility", f"{volatility:.3f}%")
-                else:
-                    st.metric("Rate Volatility", "N/A")
-                    
-                if current_rate is not None:
-                    st.metric("Annualized Cost", f"{(current_rate * 3 * 365):.2f}%",
-                             help="Estimated annual cost of holding perpetual position at current funding rate")
-                else:
-                    st.metric("Annualized Cost", "N/A")
-            
-            # If we have price data, compute correlation between funding rate and price
-            if filtered_funding_df is not None and price_history_df is not None:
-                st.markdown("### Funding Rate and Price Correlation")
-                
-                try:
-                    # Try to merge dataframes on datetime
-                    rate_col = 'close' if 'close' in filtered_funding_df.columns else 'rate' if 'rate' in filtered_funding_df.columns else 'funding_rate'
-                    
-                    # Ensure both dataframes have datetime as index
-                    # First explicitly convert any numeric columns to ensure they're not objects
-                    numeric_df = filtered_funding_df.copy()
-                    # Ensure the column is numeric before resampling
-                    numeric_df[rate_col] = pd.to_numeric(numeric_df[rate_col], errors='coerce')
-                    funding_df_resampled = numeric_df.set_index('datetime').resample('1D').mean()
-                    
-                    # Do the same for price data
-                    price_numeric_df = price_history_df.copy()
-                    price_numeric_df['close'] = pd.to_numeric(price_numeric_df['close'], errors='coerce')
-                    price_df_resampled = price_numeric_df.set_index('datetime').resample('1D').mean()
-                    
-                    # Merge on index
-                    merged_df = pd.merge(
-                        funding_df_resampled[rate_col].to_frame('funding_rate'),
-                        price_df_resampled['close'].to_frame('price'),
-                        left_index=True, right_index=True,
-                        how='inner'
-                    )
-                    
-                    if len(merged_df) >= 5:  # At least 5 data points for correlation
-                        correlation = merged_df['funding_rate'].corr(merged_df['price'])
-                        
-                        corr_cols = st.columns(2)
-                        with corr_cols[0]:
-                            st.metric("Funding-Price Correlation", f"{correlation:.2f}",
-                                     help="Correlation between funding rate and price. Range -1 to 1.")
-                        
-                        with corr_cols[1]:
-                            # Interpret correlation
-                            if correlation > 0.7:
-                                interpretation = "Strong positive correlation"
-                            elif correlation > 0.3:
-                                interpretation = "Moderate positive correlation"
-                            elif correlation > -0.3:
-                                interpretation = "Weak correlation"
-                            elif correlation > -0.7:
-                                interpretation = "Moderate negative correlation"
-                            else:
-                                interpretation = "Strong negative correlation"
-                            
-                            st.markdown(f"**Correlation Strength:** {interpretation}")
-                            
-                        # Add scatter plot of funding rate vs price
-                        fig = px.scatter(
-                            merged_df.reset_index(), 
-                            x='funding_rate',
-                            y='price',
-                            trendline='ols',
-                            title=f"{asset} Funding Rate vs Price Correlation",
-                            labels={'funding_rate': 'Funding Rate', 'price': f'{asset} Price (USD)'},
-                            color_discrete_sequence=[ASSET_COLORS.get(asset, '#3366CC')]
-                        )
-                        display_chart(apply_chart_theme(fig))
-                    else:
-                        st.info("Insufficient data points to calculate correlation.")
-                except Exception as e:
-                    logger.error(f"Error calculating funding rate-price correlation: {e}")
-                    st.info("Could not calculate correlation between funding rate and price.")
-        else:
-            st.info(f"No funding rate data available for {asset}.")
-    
-    # Display funding rates by exchange
-    st.subheader("Exchange Funding Rate Comparison")
-    
-    # Add filter for margin type
-    margin_filter = None
-    if funding_exchange_df is not None and not funding_exchange_df.empty and 'margin_type' in funding_exchange_df.columns:
-        margin_types = ['All'] + sorted(funding_exchange_df['margin_type'].unique().tolist())
-        margin_filter = st.selectbox(
-            "Filter by Margin Type", 
-            margin_types,
-            index=0,
-            help="Filter exchanges by margin type (stablecoin or token margin)"
-        )
-    
-    if funding_exchange_df is not None and not funding_exchange_df.empty and 'funding_rate' in funding_exchange_df.columns:
-        # Apply margin type filter if selected
-        filtered_df = funding_exchange_df
-        if margin_filter and margin_filter != 'All' and 'margin_type' in funding_exchange_df.columns:
-            filtered_df = funding_exchange_df[funding_exchange_df['margin_type'] == margin_filter.lower()]
-        
-        # Make sure we have data after filtering
-        if not filtered_df.empty:
-            # Sort by funding rate
-            filtered_df = filtered_df.sort_values('funding_rate', ascending=False)
-            
-            # Convert funding rate to percentage
-            filtered_df['funding_rate_pct'] = filtered_df['funding_rate'] * 100
-            
-            # Create bar chart with improved formatting
-            fig = px.bar(
-                filtered_df.head(15),  # Top 15 exchanges
-                x='exchange_name',
-                y='funding_rate_pct',
-                title=f"{asset} Current Funding Rates by Exchange" + (f" ({margin_filter} Margin)" if margin_filter and margin_filter != 'All' else ""),
-                color='funding_rate_pct',
-                color_continuous_scale='RdBu_r',
-                color_continuous_midpoint=0,
-                text='funding_rate_pct'
-            )
-            
-            # Format text labels
-            fig.update_traces(
-                texttemplate='%{text:.3f}%',
-                textposition='outside'
-            )
-            
-            fig.update_layout(
-                xaxis_title=None,
-                yaxis_title="Funding Rate (%)",
-                uniformtext_minsize=8,
-                uniformtext_mode='hide'
-            )
-            
-            # Format axis
-            fig.update_xaxes(tickangle=-45)
-            
-            display_chart(apply_chart_theme(fig))
-            
-            # Add exchange count and stats
-            st.markdown(f"**Showing funding rates for {len(filtered_df.head(15))} out of {len(filtered_df)} exchanges**")
-            
-            # Create two columns for different visualizations
-            col1, col2 = st.columns(2)
-            
-            with col1:
-                # Create funding rate histogram
-                hist_fig = px.histogram(
-                    filtered_df,
-                    x='funding_rate_pct',
-                    nbins=20,
-                    title=f"{asset} Funding Rate Distribution",
-                    labels={'funding_rate_pct': 'Funding Rate (%)'},
-                    color_discrete_sequence=[ASSET_COLORS.get(asset, '#3366CC')]
-                )
-                
-                # Add vertical line at mean
-                mean_rate = filtered_df['funding_rate_pct'].mean()
-                hist_fig.add_vline(
-                    x=mean_rate,
-                    line_dash="dash",
-                    line_color="red",
-                    annotation_text=f"Mean: {mean_rate:.3f}%",
-                    annotation_position="top right"
-                )
-                
-                display_chart(apply_chart_theme(hist_fig))
-            
-            with col2:
-                # Create funding rate statistics table
-                if 'margin_type' in filtered_df.columns:
-                    # Group by margin type
-                    margin_groups = filtered_df.groupby('margin_type')
-                    
-                    # Calculate statistics
-                    stats_data = []
-                    for margin_type, group in margin_groups:
-                        stats_data.append({
-                            'Margin Type': margin_type.capitalize(),
-                            'Average Rate (%)': group['funding_rate_pct'].mean(),
-                            'Min Rate (%)': group['funding_rate_pct'].min(),
-                            'Max Rate (%)': group['funding_rate_pct'].max(),
-                            'Std Dev (%)': group['funding_rate_pct'].std(),
-                            'Exchanges': len(group)
-                        })
-                    
-                    # Add overall row if we have multiple margin types
-                    if len(stats_data) > 1:
-                        stats_data.append({
-                            'Margin Type': 'Overall',
-                            'Average Rate (%)': filtered_df['funding_rate_pct'].mean(),
-                            'Min Rate (%)': filtered_df['funding_rate_pct'].min(),
-                            'Max Rate (%)': filtered_df['funding_rate_pct'].max(),
-                            'Std Dev (%)': filtered_df['funding_rate_pct'].std(),
-                            'Exchanges': len(filtered_df)
-                        })
-                    
-                    # Create DataFrame
-                    stats_df = pd.DataFrame(stats_data)
-                    
-                    # Display statistics
-                    st.markdown("### Funding Rate Statistics")
-                    
-                    # Format values
-                    format_dict = {
-                        'Average Rate (%)': lambda x: f"{x:.3f}%",
-                        'Min Rate (%)': lambda x: f"{x:.3f}%",
-                        'Max Rate (%)': lambda x: f"{x:.3f}%",
-                        'Std Dev (%)': lambda x: f"{x:.3f}%"
-                    }
-                    
-                    create_formatted_table(stats_df, format_dict=format_dict)
-                else:
-                    # Simple statistics without margin type grouping
-                    st.markdown("### Funding Rate Statistics")
-                    
-                    stats_data = [{
-                        'Statistic': 'Average Rate',
-                        'Value': f"{filtered_df['funding_rate_pct'].mean():.3f}%"
-                    }, {
-                        'Statistic': 'Minimum Rate',
-                        'Value': f"{filtered_df['funding_rate_pct'].min():.3f}%"
-                    }, {
-                        'Statistic': 'Maximum Rate',
-                        'Value': f"{filtered_df['funding_rate_pct'].max():.3f}%"
-                    }, {
-                        'Statistic': 'Standard Deviation',
-                        'Value': f"{filtered_df['funding_rate_pct'].std():.3f}%"
-                    }, {
-                        'Statistic': 'Number of Exchanges',
-                        'Value': str(len(filtered_df))
-                    }]
-                    
-                    stats_df = pd.DataFrame(stats_data)
-                    create_formatted_table(stats_df)
-            
-            # Add cross-asset funding rate comparison if we have data for multiple assets
-            st.subheader("Cross-Asset Funding Rate Comparison")
-            try:
-                # Try to load funding rate data for other assets
-                asset_funding_data = {}
-                for compare_asset in ['BTC', 'ETH', 'SOL', 'XRP']:
-                    if compare_asset == asset:
-                        # Already have this asset's data
-                        avg_rate = filtered_df['funding_rate_pct'].mean()
-                        asset_funding_data[compare_asset] = avg_rate
-                    else:
-                        # Try to find funding rate data for this asset
-                        for key in data.get('funding_rate', {}):
-                            if 'exchange_list' in key.lower():
-                                temp_df = data['funding_rate'][key]
-                                if not temp_df.empty:
-                                    compare_df = normalize_funding_rate_data(temp_df, compare_asset)
-                                    if not compare_df.empty and 'funding_rate' in compare_df.columns:
-                                        avg_rate = pd.to_numeric(compare_df['funding_rate'], errors='coerce').mean() * 100
-                                        asset_funding_data[compare_asset] = avg_rate
-                                        break
-                
-                # Create comparison chart if we have data for multiple assets
-                if len(asset_funding_data) > 1:
-                    comp_df = pd.DataFrame({
-                        'Asset': list(asset_funding_data.keys()),
-                        'Average Funding Rate (%)': list(asset_funding_data.values())
-                    })
-                    
-                    comp_fig = px.bar(
-                        comp_df,
-                        x='Asset',
-                        y='Average Funding Rate (%)',
-                        title="Average Funding Rate Comparison Across Assets",
-                        color='Asset',
-                        color_discrete_map={
-                            'BTC': ASSET_COLORS.get('BTC', '#F7931A'),
-                            'ETH': ASSET_COLORS.get('ETH', '#627EEA'),
-                            'SOL': ASSET_COLORS.get('SOL', '#00FFA3'),
-                            'XRP': ASSET_COLORS.get('XRP', '#23292F')
-                        },
-                        text='Average Funding Rate (%)'
-                    )
-                    
-                    # Format text labels
-                    comp_fig.update_traces(
-                        texttemplate='%{text:.3f}%',
-                        textposition='outside'
-                    )
-                    
-                    display_chart(apply_chart_theme(comp_fig))
-                    
-                    # Add brief interpretation
-                    max_asset = comp_df.loc[comp_df['Average Funding Rate (%)'].idxmax()]['Asset']
-                    min_asset = comp_df.loc[comp_df['Average Funding Rate (%)'].idxmin()]['Asset']
-                    st.markdown(f"**Funding Rate Analysis:** {max_asset} currently has the highest average funding rate, indicating stronger bullish sentiment, while {min_asset} has the lowest, suggesting relatively less bullish or more bearish sentiment.")
-                else:
-                    st.info("Insufficient data to compare funding rates across assets.")
-            except Exception as e:
-                logger.error(f"Error creating cross-asset funding rate comparison: {e}")
-                st.info("Could not create cross-asset funding rate comparison.")
-        else:
-            st.info(f"No {margin_filter} margin funding rate data available for {asset}.")
-    else:
-        exchange_funding_fallback_suggestions = [
-            "Check that exchange funding rate data files exist in the funding_rate directory",
-            "Ensure exchange list data contains 'funding_rate' and 'exchange_name' columns",
-            "Verify that the data has been properly normalized from nested structures"
-        ]
-        display_chart(create_fallback_chart(
-            f"{asset} Current Funding Rates by Exchange", 
-            "No exchange funding rate data available",
-            suggestions=exchange_funding_fallback_suggestions
-        ))
+    if not valid_liquidation_data:
+        display_chart(create_fallback_chart(f"{asset} Liquidation History", "No liquidation data available"))
     
     # ==============================
-    # SECTION 6: Exchange Liquidity Comparison
+    # SECTION 5: Market Sentiment Analysis
     # ==============================
-    st.header("Exchange Liquidity Snapshot")
+    st.subheader("Market Sentiment Analysis")
     
-    # Get exchange data from market and open interest
-    exchange_data = []
-    
-    # First collect market data
-    market_exchanges = set()
-    for key in data.get('market', {}):
-        if 'pairs_markets' in key.lower() and asset.lower() in key.lower():
-            market_df = data['market'][key]
-            if not market_df.empty and 'exchange_name' in market_df.columns:
-                for idx, row in market_df.iterrows():
-                    exchange_name = row['exchange_name']
-                    market_exchanges.add(exchange_name)
-                    
-                    exchange_dict = {
-                        'exchange_name': exchange_name,
-                        'volume_usd': row['volume_usd'] if 'volume_usd' in row else None,
-                    }
-                    
-                    # Add additional metrics if available
-                    if 'open_interest_usd' in row:
-                        exchange_dict['open_interest_usd'] = row['open_interest_usd']
-                    
-                    if 'funding_rate' in row:
-                        exchange_dict['funding_rate'] = row['funding_rate']
-                    
-                    exchange_data.append(exchange_dict)
-    
-    # Then add open interest data
-    if oi_exchange_df is not None and not oi_exchange_df.empty:
-        oi_col = None
-        for possible_col in ['open_interest_usd', 'open_interest']:
-            if possible_col in oi_exchange_df.columns:
-                oi_col = possible_col
+    # Get funding rate history
+    funding_history_df = None
+    for key in data.get(asset, {}).get('funding_rate', {}):
+        if 'ohlc_history' in key.lower() or ('history' in key.lower() and asset.lower() in key.lower()):
+            temp_df = data[asset]['funding_rate'][key]
+            if not temp_df.empty:
+                funding_history_df = process_timestamps(temp_df)
                 break
-                
-        if oi_col and 'exchange_name' in oi_exchange_df.columns:
-            for idx, row in oi_exchange_df.iterrows():
-                exchange_name = row['exchange_name']
-                
-                # Check if exchange already exists
-                existing = [item for item in exchange_data if item['exchange_name'] == exchange_name]
-                
-                if existing:
-                    # Update existing entry
-                    existing[0]['open_interest_usd'] = row[oi_col]
+    
+    # Get long-short ratio data (if available)
+    # First try to get from global data
+    long_short_df = None
+    for key in data.get('shared', {}).get('long_short', {}):
+        if 'global_account' in key.lower():
+            temp_df = data['shared']['long_short'][key]
+            if not temp_df.empty:
+                long_short_df = process_timestamps(temp_df)
+                break
+    
+    # Create sentiment indicators
+    sentiment_indicators = {}
+    sentiment_weights = {}
+    
+    # Funding Rate (if available)
+    if current_rate is not None:
+        # Scale from -0.2% to +0.2% to a -1 to +1 scale
+        scaled_funding = min(max(current_rate / 20, -1), 1)
+        sentiment_indicators['Funding Rate'] = scaled_funding
+        sentiment_weights['Funding Rate'] = 2.0  # Higher weight as it's directly reflective of market sentiment
+    
+    # Long-Short Ratio (if available)
+    if long_short_df is not None and not long_short_df.empty and 'global_account_long_short_ratio' in long_short_df.columns:
+        latest_ls_ratio = long_short_df['global_account_long_short_ratio'].iloc[-1]
+        # Scale from 0.5 to 2.0 to a -1 to +1 scale
+        scaled_ls_ratio = min(max((latest_ls_ratio - 1) / 1, -1), 1)
+        sentiment_indicators['Long-Short Ratio'] = scaled_ls_ratio
+        sentiment_weights['Long-Short Ratio'] = 1.5  # Medium-high weight
+    
+    # Liquidation Ratio (if available)
+    if valid_liquidation_data:
+        total_long_liq = liquidation_df['aggregated_long_liquidation_usd'].sum()
+        total_short_liq = liquidation_df['aggregated_short_liquidation_usd'].sum()
+        
+        if total_long_liq > 0 or total_short_liq > 0:
+            # More short liquidations is bullish, more long liquidations is bearish
+            liq_ratio = (total_short_liq - total_long_liq) / max(total_short_liq + total_long_liq, 1)
+            sentiment_indicators['Liquidation Ratio'] = liq_ratio
+            sentiment_weights['Liquidation Ratio'] = 1.0  # Medium weight
+    
+    # Display sentiment gauge chart if we have enough indicators
+    if len(sentiment_indicators) >= 2:
+        # Calculate weighted average sentiment
+        total_weight = sum(sentiment_weights.values())
+        weighted_sentiment = sum([sentiment_indicators[k] * sentiment_weights[k] for k in sentiment_indicators]) / total_weight
+        
+        # Scale to 0-100 for gauge chart (from -1 to +1)
+        gauge_value = (weighted_sentiment + 1) * 50
+        
+        # Determine sentiment category
+        if gauge_value >= 70:
+            sentiment_category = "Strongly Bullish"
+        elif gauge_value >= 55:
+            sentiment_category = "Moderately Bullish"
+        elif gauge_value > 45:
+            sentiment_category = "Neutral"
+        elif gauge_value > 30:
+            sentiment_category = "Moderately Bearish"
+        else:
+            sentiment_category = "Strongly Bearish"
+        
+        # Create gauge chart
+        fig = go.Figure(go.Indicator(
+            mode="gauge+number",
+            value=gauge_value,
+            title={"text": f"{asset} Market Sentiment"},
+            gauge={
+                "axis": {"range": [0, 100], "tickwidth": 1, "tickcolor": "darkblue"},
+                "bar": {"color": "royalblue"},
+                "bgcolor": "white",
+                "borderwidth": 2,
+                "bordercolor": "gray",
+                "steps": [
+                    {"range": [0, 30], "color": "red"},
+                    {"range": [30, 45], "color": "orange"},
+                    {"range": [45, 55], "color": "gray"},
+                    {"range": [55, 70], "color": "lightgreen"},
+                    {"range": [70, 100], "color": "green"}
+                ],
+                "threshold": {
+                    "line": {"color": "blue", "width": 4},
+                    "thickness": 0.75,
+                    "value": gauge_value
+                }
+            }
+        ))
+        
+        fig.update_layout(
+            height=300,
+            margin=dict(l=20, r=20, t=50, b=20)
+        )
+        
+        # Ensure linear scale on gauge chart
+        fig.update_yaxes(type="linear")
+        fig.update_xaxes(type="linear")
+        
+        # Display the gauge in a narrower column
+        col1, col2, col3 = st.columns([1, 2, 1])
+        with col2:
+            st.plotly_chart(fig, use_container_width=True)
+        
+        # Display sentiment breakdown
+        st.subheader("Sentiment Breakdown")
+        
+        # Create columns for sentiment metrics
+        sentiment_cols = st.columns(len(sentiment_indicators))
+        
+        for i, (indicator, value) in enumerate(sentiment_indicators.items()):
+            with sentiment_cols[i]:
+                # Convert the -1 to +1 scale to a descriptive string
+                if value > 0.7:
+                    sentiment_str = "Strongly Bullish"
+                    sentiment_color = "green"
+                elif value > 0.3:
+                    sentiment_str = "Moderately Bullish"
+                    sentiment_color = "lightgreen"
+                elif value > -0.3:
+                    sentiment_str = "Neutral"
+                    sentiment_color = "gray"
+                elif value > -0.7:
+                    sentiment_str = "Moderately Bearish"
+                    sentiment_color = "orange"
                 else:
-                    # Create new entry
-                    exchange_dict = {
-                        'exchange_name': exchange_name,
-                        'open_interest_usd': row[oi_col],
-                        'volume_usd': None
-                    }
-                    exchange_data.append(exchange_dict)
-    
-    # Finally add funding rate data
-    if funding_exchange_df is not None and not funding_exchange_df.empty:
-        for idx, row in funding_exchange_df.iterrows():
-            exchange_name = row['exchange_name']
-            
-            # Check if exchange already exists
-            existing = [item for item in exchange_data if item['exchange_name'] == exchange_name]
-            
-            if existing:
-                # Update existing entry
-                existing[0]['funding_rate'] = row['funding_rate']
-            else:
-                # Create new entry
-                exchange_dict = {
-                    'exchange_name': exchange_name,
-                    'funding_rate': row['funding_rate'],
-                    'volume_usd': None,
-                    'open_interest_usd': None
-                }
-                exchange_data.append(exchange_dict)
-    
-    # Create DataFrame and fill missing values
-    if exchange_data:
-        try:
-            exchange_df = pd.DataFrame(exchange_data)
-            
-            # Merge rows with the same exchange_name by summing numeric columns
-            if not exchange_df.empty:
-                exchange_df = exchange_df.groupby('exchange_name').agg({
-                    'volume_usd': 'sum',
-                    'open_interest_usd': 'sum',
-                    'funding_rate': 'mean'
-                }).reset_index()
+                    sentiment_str = "Strongly Bearish"
+                    sentiment_color = "red"
                 
-                # Add market share columns
-                if 'volume_usd' in exchange_df.columns:
-                    total_volume = exchange_df['volume_usd'].sum(skipna=True)
-                    if total_volume > 0:
-                        exchange_df['volume_share'] = exchange_df['volume_usd'] / total_volume * 100
-                
-                if 'open_interest_usd' in exchange_df.columns:
-                    total_oi = exchange_df['open_interest_usd'].sum(skipna=True)
-                    if total_oi > 0:
-                        exchange_df['oi_share'] = exchange_df['open_interest_usd'] / total_oi * 100
-                
-                # Sort by volume
-                if 'volume_usd' in exchange_df.columns:
-                    exchange_df = exchange_df.sort_values('volume_usd', ascending=False, na_position='last')
-                elif 'open_interest_usd' in exchange_df.columns:
-                    exchange_df = exchange_df.sort_values('open_interest_usd', ascending=False, na_position='last')
-                
-                # Display exchange comparison table
-                st.subheader(f"{asset} Exchange Liquidity Comparison")
-                
-                # Choose which columns to display and format
-                display_columns = ['exchange_name']
-                format_dict = {}
-                
-                if 'volume_usd' in exchange_df.columns:
-                    display_columns.extend(['volume_usd', 'volume_share'])
-                    format_dict['volume_usd'] = lambda x: format_currency(x, abbreviate=True) if pd.notna(x) else "N/A"
-                    format_dict['volume_share'] = lambda x: f"{x:.2f}%" if pd.notna(x) else "N/A"
-                
-                if 'open_interest_usd' in exchange_df.columns:
-                    display_columns.extend(['open_interest_usd', 'oi_share'])
-                    format_dict['open_interest_usd'] = lambda x: format_currency(x, abbreviate=True) if pd.notna(x) else "N/A"
-                    format_dict['oi_share'] = lambda x: f"{x:.2f}%" if pd.notna(x) else "N/A"
-                
-                if 'funding_rate' in exchange_df.columns:
-                    display_columns.append('funding_rate')
-                    format_dict['funding_rate'] = lambda x: f"{x*100:.3f}%" if pd.notna(x) else "N/A"
-                
-                # Rename columns for display
-                rename_dict = {
-                    'exchange_name': 'Exchange',
-                    'volume_usd': 'Volume (24h)',
-                    'volume_share': 'Volume Share',
-                    'open_interest_usd': 'Open Interest',
-                    'oi_share': 'OI Share',
-                    'funding_rate': 'Funding Rate'
-                }
-                
-                display_df = exchange_df[display_columns].copy()
-                display_df = display_df.rename(columns=rename_dict)
-                
-                # Update format dict keys
-                format_dict = {rename_dict.get(k, k): v for k, v in format_dict.items()}
-                
-                # Create and display the table
-                create_formatted_table(display_df.head(15), format_dict=format_dict)
-                
-                # Create market share visualization
-                st.subheader("Market Share Analysis")
-                
-                # Create two columns for market share charts
-                col1, col2 = st.columns(2)
-                
-                with col1:
-                    # Trading volume market share
-                    if 'volume_share' in exchange_df.columns:
-                        top_volume_exchanges = exchange_df.sort_values('volume_usd', ascending=False).head(8)
-                        
-                        if not top_volume_exchanges.empty:
-                            fig = px.pie(
-                                top_volume_exchanges,
-                                values='volume_usd',
-                                names='exchange_name',
-                                title=f"{asset} Trading Volume Market Share",
-                                color_discrete_map=EXCHANGE_COLORS
-                            )
-                            
-                            fig.update_traces(textposition='inside', textinfo='percent+label')
-                            display_chart(apply_chart_theme(fig))
-                        else:
-                            display_chart(create_fallback_chart(f"{asset} Trading Volume Market Share", "No volume market share data available"))
-                    else:
-                        display_chart(create_fallback_chart(f"{asset} Trading Volume Market Share", "No volume market share data available"))
-                
-                with col2:
-                    # Open interest market share
-                    if 'oi_share' in exchange_df.columns:
-                        top_oi_exchanges = exchange_df.sort_values('open_interest_usd', ascending=False).head(8)
-                        
-                        if not top_oi_exchanges.empty:
-                            fig = px.pie(
-                                top_oi_exchanges,
-                                values='open_interest_usd',
-                                names='exchange_name',
-                                title=f"{asset} Open Interest Market Share",
-                                color_discrete_map=EXCHANGE_COLORS
-                            )
-                            
-                            fig.update_traces(textposition='inside', textinfo='percent+label')
-                            display_chart(apply_chart_theme(fig))
-                        else:
-                            display_chart(create_fallback_chart(f"{asset} Open Interest Market Share", "No open interest market share data available"))
-                    else:
-                        display_chart(create_fallback_chart(f"{asset} Open Interest Market Share", "No open interest market share data available"))
-            else:
-                st.info(f"No exchange comparison data available for {asset}.")
-        except Exception as e:
-            st.warning(f"Error processing exchange data: {e}")
-            logger.error(f"Error processing exchange data: {e}\n{traceback.format_exc()}")
-            st.info(f"No exchange comparison data available for {asset}.")
+                # Display metric
+                st.metric(
+                    indicator, 
+                    sentiment_str,
+                    f"Weight: {sentiment_weights[indicator]}"
+                )
+        
+        # Display overall sentiment
+        st.markdown(f"""
+        **Overall Market Sentiment: <span style='color: {"green" if gauge_value > 55 else "red" if gauge_value < 45 else "gray"}'>{sentiment_category}</span>**
+        
+        This combined indicator synthesizes multiple market signals including funding rates, long-short ratios, and liquidation patterns to provide a holistic view of market sentiment.
+        
+        *Note: This is a relative measure and should be used alongside other technical and fundamental analysis.*
+        """, unsafe_allow_html=True)
     else:
-        st.info(f"No exchange comparison data available for {asset}.")
+        st.warning("Insufficient data to calculate combined market sentiment indicator. At least two sentiment indicators are required.")
     
     # ==============================
     # Key Market Insights
@@ -2012,103 +1671,47 @@ def main():
         st.info("Insufficient data available to generate market insights.")
     
 
-def _test_asset_data_loading():
+def main():
     """
-    Internal function to test data loading for different assets.
-    This is a diagnostic function that can be run to verify all assets work correctly.
+    Main function to render the report dashboard with multi-asset support.
     """
-    assets_to_test = ['BTC', 'ETH', 'SOL', 'XRP']
-    results = {}
-    
-    for test_asset in assets_to_test:
-        # Store the current session state
-        st.session_state.selected_asset = test_asset
+    try:
+        # Render sidebar
+        render_sidebar()
         
-        # Get the data for this asset
-        data = load_report_data()
+        # Page title and description
+        st.title(f"{APP_ICON} Crypto Liquidity Report")
+        st.write("Comprehensive analysis of market liquidity metrics across major crypto assets")
         
-        # Test all data categories
-        volume_data = extract_asset_volume_data(data, [test_asset])
-        has_volume = bool(volume_data)
+        # Display loading message
+        with st.spinner("Loading dashboard data..."):
+            # Load data for all supported assets
+            all_data = load_report_data(assets=SUPPORTED_ASSETS)
         
-        # Test funding rate data
-        funding_history_df = None
-        has_funding_history = False
+        # Check if data is available
+        if not all_data:
+            st.error("No data available for the dashboard.")
+            return
         
-        # Try to find funding rate data
-        for key in data.get('funding_rate', {}):
-            if 'ohlc_history' in key.lower() or ('history' in key.lower() and test_asset.lower() in key.lower()):
-                temp_df = data['funding_rate'][key]
-                if not temp_df.empty:
-                    funding_history_df = process_timestamps(temp_df)
-                    has_funding_history = not funding_history_df.empty
-                    break
+        # Create tabs for cross-asset overview and individual assets
+        tab_names = ["Cross-Asset Overview"] + SUPPORTED_ASSETS
+        tabs = st.tabs(tab_names)
         
-        # Test exchange funding data
-        funding_exchange_df = None
-        has_exchange_funding = False
+        with tabs[0]:  # Cross-Asset Overview tab
+            # Cross-asset comparison dashboard
+            create_cross_asset_overview(all_data)
         
-        # Try to find exchange funding rate data
-        for key in data.get('funding_rate', {}):
-            if 'exchange_list' in key.lower():
-                fr_df = data['funding_rate'][key]
-                if not fr_df.empty:
-                    funding_exchange_df = normalize_funding_rate_data(fr_df, test_asset)
-                    has_exchange_funding = not funding_exchange_df.empty
-                    break
-        
-        # Store results
-        results[test_asset] = {
-            'volume': has_volume,
-            'funding_history': has_funding_history,
-            'exchange_funding': has_exchange_funding
-        }
-    
-    return results
+        # Create asset-specific tabs
+        for i, asset in enumerate(SUPPORTED_ASSETS):
+            with tabs[i+1]:  # +1 because the first tab is the overview
+                # Asset-specific analysis
+                display_asset_section(all_data, asset)
+                
+    except Exception as e:
+        st.error(f"An error occurred: {e}")
+        logger.error(f"Error in main: {e}", exc_info=True)
+        return
 
-def _display_test_results(test_results):
-    """
-    Display test results in a nicely formatted table.
-    """
-    st.header("Asset Data Loading Test Results")
-    
-    # Create DataFrame from results
-    results_df = pd.DataFrame(test_results).T.reset_index()
-    results_df.columns = ['Asset', 'Volume Data', 'Funding Rate History', 'Exchange Funding Rates']
-    
-    # Display results
-    st.dataframe(results_df)
-    
-    # Show overall summary
-    all_assets_volume = all(test_results[asset]['volume'] for asset in test_results)
-    all_assets_funding = all(test_results[asset]['funding_history'] for asset in test_results)
-    all_assets_exchange = all(test_results[asset]['exchange_funding'] for asset in test_results)
-    
-    if all_assets_volume and all_assets_funding and all_assets_exchange:
-        st.success("All data categories available for all assets!")
-    else:
-        st.warning("Some data categories are missing for certain assets.")
-        
-        # Provide detailed guidance for missing data
-        missing_data = []
-        for asset in test_results:
-            for category, has_data in test_results[asset].items():
-                if not has_data:
-                    missing_data.append(f"{asset} is missing {category} data")
-        
-        if missing_data:
-            st.subheader("Missing Data Details")
-            for item in missing_data:
-                st.markdown(f"- {item}")
-            
-            st.subheader("Troubleshooting Steps")
-            st.markdown("""
-            1. **Volume Data**: Check `futures/taker_buy_sell/api_futures_taker_buy_sell_volume_history_[ASSET].parquet`
-            2. **Funding Rate History**: Check `futures/funding_rate/api_futures_fundingRate_oi_weight_ohlc_history_[ASSET].parquet`
-            3. **Exchange Funding Rates**: Check `futures/funding_rate/api_futures_fundingRate_exchange_list.parquet`
-            
-            Ensure files exist and have the expected data structure. If a file is missing or empty, it will need to be generated from the API.
-            """)
 
 if __name__ == "__main__":
     # Check if we're in test mode

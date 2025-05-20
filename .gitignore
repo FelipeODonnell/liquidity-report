@@ -33,3 +33,5 @@ notes/
 report.py
 refresh_time.py
 coinglass-api/
+data-checker.py
+data-saved.md

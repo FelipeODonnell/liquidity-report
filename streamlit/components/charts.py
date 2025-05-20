@@ -447,11 +447,11 @@ def create_time_series_with_bar(df, x_col, line_y_col, bar_y_col, title, height=
     return apply_chart_theme(fig)
 
 def create_pie_chart(df, values_col, names_col, title, height=400, color_map=None, exclude_names=None, 
-                 show_top_n=None, min_percent=1.0, pull_out_top=True, 
+                 show_top_n=None, min_percent=1.0, pull_out_top=False, 
                  hover_info='label+percent+value', show_legend=True, show_outside_labels=False,
                  display_percentages=True, display_labels=True, use_short_labels=False, width=None):
     """
-    Create a pie chart with improved formatting and filtering options.
+    Create a bar chart that replaces a pie chart, with the same data processing.
     
     Parameters:
     -----------
@@ -474,17 +474,17 @@ def create_pie_chart(df, values_col, names_col, title, height=400, color_map=Non
     min_percent : float, optional
         Minimum percentage to include a slice (items below will be grouped as "Others")
     pull_out_top : bool, optional
-        Whether to pull out the largest slice for emphasis
+        Whether to pull out the largest slice for emphasis (not used in bar chart)
     hover_info : str
         Information to display in hover tooltip
     show_legend : bool
         Whether to show the legend
     show_outside_labels : bool
-        Whether to place labels outside the pie (prevents overlapping)
+        Whether to place labels outside (not used in bar chart)
     display_percentages : bool
         Whether to display percentage values on labels
     display_labels : bool
-        Whether to display text labels for slices
+        Whether to display text labels for bars
     use_short_labels : bool
         Whether to truncate long labels
     width : int, optional
@@ -495,6 +495,10 @@ def create_pie_chart(df, values_col, names_col, title, height=400, color_map=Non
     plotly.graph_objects.Figure
         The created figure
     """
+    # Always exclude 'All' from charts if exclude_names not explicitly provided
+    if exclude_names is None:
+        exclude_names = ['All', 'all', 'ALL']
+    
     if df.empty:
         # Return empty figure with message
         fig = go.Figure()
@@ -538,11 +542,11 @@ def create_pie_chart(df, values_col, names_col, title, height=400, color_map=Non
         fig.update_layout(title=title, height=height)
         return apply_chart_theme(fig)
     
-    # Calculate percentages for grouping small slices
+    # Calculate percentages for grouping small bars
     total_value = plot_df[values_col].sum()
     plot_df['percent'] = (plot_df[values_col] / total_value) * 100
     
-    # Group small slices as "Others" based on minimum percentage
+    # Group small items as "Others" based on minimum percentage
     if min_percent > 0:
         small_items = plot_df[plot_df['percent'] < min_percent]
         if not small_items.empty:
@@ -578,118 +582,94 @@ def create_pie_chart(df, values_col, names_col, title, height=400, color_map=Non
         else:
             plot_df = top_items
     
-    # Sort by value for consistent ordering
-    plot_df = plot_df.sort_values(values_col, ascending=False)
-    
-    # Create a list of pulls for the largest slice if requested
-    pulls = None
-    if pull_out_top and len(plot_df) > 1:
-        pulls = [0.1] + [0] * (len(plot_df) - 1)
+    # Sort by value for consistent ordering (reversed for horizontal bar chart - largest at top)
+    plot_df = plot_df.sort_values(values_col, ascending=True)
     
     # Format labels, possibly truncating long ones
-    labels = plot_df[names_col].tolist()
     if use_short_labels:
-        labels = [label[:15] + '...' if isinstance(label, str) and len(label) > 15 else label for label in labels]
+        plot_df[names_col] = plot_df[names_col].apply(lambda x: x[:15] + '...' if isinstance(x, str) and len(x) > 15 else x)
     
-    # Determine textinfo based on parameters
-    if display_percentages and display_labels:
-        text_info = 'percent+label'
-    elif display_percentages:
-        text_info = 'percent'
+    # Create custom text for the bars
+    if display_percentages:
+        plot_df['text'] = plot_df['percent'].apply(lambda x: f'{x:.1f}%')
+        if display_labels:
+            # Both percentage and label
+            plot_df['text'] = plot_df.apply(lambda x: f"{x[names_col]}: {x['text']}", axis=1)
     elif display_labels:
-        text_info = 'label'
+        plot_df['text'] = plot_df[names_col]
     else:
-        text_info = 'none'
+        plot_df['text'] = ''
     
-    # Determine text position based on whether to show outside labels
-    text_position = 'outside' if show_outside_labels else 'inside'
+    # Create colors list if color map provided
+    colors = None
+    if color_map:
+        colors = [color_map.get(name, None) for name in plot_df[names_col]]
     
-    # Use auto for inside text orientation when using outside labels
-    inside_text_orientation = 'auto' if show_outside_labels else 'radial'
+    # Create a horizontal bar chart to replace the pie chart
+    fig = go.Figure()
     
-    # Create custom text template based on display preferences
-    if display_percentages and display_labels:
-        if show_outside_labels:
-            # For outside labels, more compact format
-            text_template = '%{label}: %{percent:.1f}%'
-        else:
-            # For inside labels, potentially multi-line
-            text_template = '%{label}<br>%{percent:.1f}%'
-    elif display_percentages:
-        text_template = '%{percent:.1f}%'
-    elif display_labels:
-        text_template = '%{label}'
-    else:
-        text_template = ''
-    
-    # Create the pie chart with improved layout
-    fig = go.Figure(data=[go.Pie(
-        labels=labels,
-        values=plot_df[values_col],
-        textinfo=text_info,
-        hoverinfo=hover_info,
-        hovertemplate='%{label}<br>%{percent:.1f}%<br>Value: %{value:,.0f}<extra></extra>',
-        texttemplate=text_template,
-        textposition=text_position,
-        insidetextorientation=inside_text_orientation,
-        pull=pulls,
-        rotation=90,  # Start at top for better readability
-        direction='clockwise',
-        showlegend=show_legend,
-        # Increase font size for better readability
-        textfont=dict(size=12),
-        # Define consistent marker parameters
-        marker=dict(
-            line=dict(color='white', width=1),  # Add thin white borders between slices
-            # Set colors if color map is provided
-            colors=[color_map.get(name, None) for name in plot_df[names_col]] if color_map else None
+    # Add trace for bar chart
+    fig.add_trace(
+        go.Bar(
+            y=plot_df[names_col],  # Names on y-axis
+            x=plot_df[values_col],  # Values on x-axis
+            orientation='h',  # Horizontal bars
+            text=plot_df['text'],
+            textposition='auto',
+            hovertemplate='%{y}<br>Value: %{x:,.0f}<br>Percentage: %{text}<extra></extra>',
+            marker=dict(
+                color=colors,
+                line=dict(color='white', width=1),
+            ),
+            textfont=dict(color='white', size=12),  # White text for better visibility
+            showlegend=False
         )
-    )])
+    )
     
-    # Determine legend position based on whether outside labels are used
-    legend_y = -0.2 if show_legend and not show_outside_labels else -0.5 if show_legend else -0.1
+    # Add percentage value annotations
+    if display_percentages:
+        annotations = []
+        for i, row in plot_df.iterrows():
+            annotations.append(
+                dict(
+                    x=row[values_col] + (total_value * 0.01),  # Slightly offset from the end of bar
+                    y=row[names_col],
+                    text=f"{row['percent']:.1f}%",
+                    showarrow=False,
+                    font=dict(color='white', size=10),
+                    xanchor='left',
+                    yanchor='middle'
+                )
+            )
     
     # Layout improvements for better readability
     layout_updates = {
-        'title': title,
+        'title': {
+            'text': title,
+            'y': 0.95,  # Position title higher
+            'font': {'color': 'white'}
+        },
         'height': height,
-        'margin': dict(t=50, b=50 if show_legend else 30, l=30, r=30),
-        'showlegend': show_legend,
-        'uniformtext': dict(
-            minsize=10,  # Minimum text size
-            mode='hide'  # Hide text that can't fit at the minimum size
-        )
+        'margin': dict(t=70, b=40, l=120, r=120),  # Increase margins for readability
+        'yaxis': {
+            'title': None,
+            'automargin': True,  # Auto-adjust margin to fit labels
+        },
+        'xaxis': {
+            'title': 'Value',
+            'showgrid': True,
+            'gridcolor': 'rgba(255, 255, 255, 0.1)',
+        },
+        # Remove all subtitles
+        'annotations': annotations if display_percentages else []
     }
     
     # Add width if provided
     if width:
         layout_updates['width'] = width
     
-    # Add legend configuration if showing legend
-    if show_legend:
-        layout_updates['legend'] = dict(
-            orientation="h",
-            yanchor="bottom",
-            y=legend_y,
-            xanchor="center",
-            x=0.5,
-            font=dict(size=10),
-            # Adjust legend item size and spacing
-            itemsizing='constant',
-            itemwidth=30
-        )
-    
     # Update layout
     fig.update_layout(**layout_updates)
-    
-    # Update traces with additional styling if using outside labels
-    if show_outside_labels:
-        fig.update_traces(
-            # Outside label line properties
-            outsidetextfont=dict(size=12, color='black'),
-            # Define the line connecting to outside labels
-            marker_line_width=1
-        )
     
     return apply_chart_theme(fig)
 

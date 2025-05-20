@@ -89,7 +89,7 @@ def main():
     render_sidebar()
     
     # Page title and description
-    st.title("Cryptocurrency ETFs")
+    st.title("ETF")
     st.write("Analysis and visualization of Bitcoin and Ethereum ETFs")
     
     # Display loading message

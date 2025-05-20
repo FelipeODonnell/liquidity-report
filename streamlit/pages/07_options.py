@@ -882,7 +882,7 @@ def main():
         render_sidebar()
 
         # Page title and description
-        st.title("Cryptocurrency Options Markets")
+        st.title("Options")
         st.write("Analysis of cryptocurrency options markets and metrics")
 
         # Get available assets for options category

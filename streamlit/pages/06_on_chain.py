@@ -340,7 +340,7 @@ def main():
     render_sidebar()
     
     # Page title only
-    st.title("Exchange Balances")
+    st.title("On-Chain")
     
     # Create tabs for each cryptocurrency
     tabs = st.tabs(CRYPTOCURRENCIES)

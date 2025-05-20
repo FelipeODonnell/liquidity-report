@@ -63,11 +63,8 @@ st.set_page_config(
 # Set the current page for sidebar navigation
 st.session_state.current_page = 'spot'
 
-# Configure more detailed logging
+# Set logging level
 logger.setLevel(logging.INFO)
-fh = logging.FileHandler('spot_page.log')
-fh.setLevel(logging.INFO)
-logger.addHandler(fh)
 
 # Initialize subcategory session state if not exists
 if 'spot_subcategory' not in st.session_state:
@@ -570,54 +567,82 @@ def render_market_data_page(asset, all_selected_assets=None, selected_exchanges=
                     # Create and display the table
                     create_formatted_table(display_df, format_dict=format_dict)
                     
-                    # Add Asset Price Comparison Chart section
-                    st.subheader(f"{asset} Price Comparison Chart")
-                    # Section for asset price comparison
+                    # Add Spot Price History section
+                    st.subheader(f"{asset} Spot Price History")
                     
-                    # Use SUPPORTED_ASSETS if available or a default list
+                    # Load spot price history data
                     try:
-                        from utils.config import SUPPORTED_ASSETS
-                        available_comparison_assets = SUPPORTED_ASSETS
-                    except:
-                        available_comparison_assets = ["BTC", "ETH", "SOL", "XRP", "DOGE", "ADA"]
-                    
-                    # Let user select assets to compare
-                    selected_comparison_assets = st.multiselect(
-                        "Select assets to compare",
-                        available_comparison_assets,
-                        default=all_selected_assets if all_selected_assets and len(all_selected_assets) <= 3 else [asset],
-                        key="price_comparison_assets"
-                    )
-                    
-                    # Extract current prices from the pairs data
-                    market_prices = {}
-                    if not pairs_df.empty and 'symbol' in pairs_df.columns and 'price_usd' in pairs_df.columns:
-                        for asset_symbol in selected_comparison_assets:
-                            asset_rows = pairs_df[pairs_df['symbol'].str.contains(asset_symbol, case=False, na=False)]
-                            if not asset_rows.empty and 'price_usd' in asset_rows.columns:
-                                # Calculate volume-weighted average price
-                                if 'volume_24h_usd' in asset_rows.columns:
+                        spot_price_path = os.path.join(DATA_BASE_PATH, get_latest_data_directory(), 'spot', 'spot_market', f'api_spot_price_history_{asset}.parquet')
+                        
+                        if os.path.exists(spot_price_path):
+                            logger.info(f"Loading spot price history from: {spot_price_path}")
+                            
+                            # Load the data
+                            spot_price_df = pd.read_parquet(spot_price_path)
+                            logger.info(f"Successfully loaded spot price history: {len(spot_price_df)} rows")
+                            
+                            if not spot_price_df.empty:
+                                # Process timestamps
+                                if 'time' in spot_price_df.columns:
+                                    # Convert timestamp to datetime
                                     try:
-                                        market_prices[asset_symbol] = calculate_weighted_average(
-                                            asset_rows, 'price_usd', 'volume_24h_usd'
+                                        max_time = spot_price_df['time'].max()
+                                        if max_time > 1e12:  # milliseconds
+                                            spot_price_df['datetime'] = pd.to_datetime(spot_price_df['time'], unit='ms')
+                                        else:  # seconds
+                                            spot_price_df['datetime'] = pd.to_datetime(spot_price_df['time'], unit='s')
+                                    except Exception as e:
+                                        logger.error(f"Error converting timestamp: {e}")
+                                        # Try multiple approaches
+                                        for unit in ['ms', 's']:
+                                            try:
+                                                spot_price_df['datetime'] = pd.to_datetime(spot_price_df['time'], unit=unit)
+                                                break
+                                            except:
+                                                pass
+                                
+                                # Create OHLC chart
+                                if 'datetime' in spot_price_df.columns and all(col in spot_price_df.columns for col in ['open', 'high', 'low', 'close']):
+                                    # Sort by datetime
+                                    spot_price_df = spot_price_df.sort_values('datetime')
+                                    
+                                    # Create the chart
+                                    ohlc_fig = create_ohlc_chart(
+                                        spot_price_df,
+                                        'datetime',
+                                        'open', 'high', 'low', 'close',
+                                        f"{asset} Spot Price OHLC",
+                                        'volume_usd',
+                                        height=500
+                                    )
+                                    
+                                    # Display the chart
+                                    st.plotly_chart(apply_chart_theme(ohlc_fig), use_container_width=True)
+                                    
+                                    # Create volume chart
+                                    if 'volume_usd' in spot_price_df.columns:
+                                        st.subheader(f"{asset} Spot Trading Volume")
+                                        
+                                        volume_fig = create_time_series_with_bar(
+                                            spot_price_df,
+                                            'datetime',
+                                            'close',
+                                            'volume_usd',
+                                            f"{asset} Spot Price vs Volume",
+                                            height=400
                                         )
-                                    except Exception as wp_err:
-                                        logger.error(f"Error calculating weighted price: {wp_err}")
-                                        # Fallback to simple average
-                                        market_prices[asset_symbol] = asset_rows['price_usd'].mean()
+                                        
+                                        st.plotly_chart(apply_chart_theme(volume_fig), use_container_width=True)
                                 else:
-                                    market_prices[asset_symbol] = asset_rows['price_usd'].mean()
-                    
-                    if selected_comparison_assets:
-                        # Create and display the chart
-                        with st.spinner("Creating price comparison chart..."):
-                            comparison_chart = create_multi_asset_candlestick(selected_comparison_assets, market_prices)
-                            if comparison_chart:
-                                st.plotly_chart(comparison_chart, use_container_width=True)
+                                    st.info(f"Spot price history data for {asset} is missing required columns for charting.")
                             else:
-                                logger.info("Price comparison chart is not available at this time.")
-                    else:
-                        logger.info("No assets selected for price comparison chart.")
+                                st.info(f"No spot price history data available for {asset}.")
+                        else:
+                            st.info(f"Spot price history file not found for {asset}.")
+                    except Exception as e:
+                        logger.error(f"Error loading spot price history: {e}", exc_info=True)
+                        st.error(f"Error loading spot price history: {str(e)}")
+                        st.info("Please check that spot price history data is available.")
 
                 # Create bar chart for volume by exchange if we have the necessary data
                 if 'exchange_name' in pairs_df.columns and 'volume_24h_usd' in pairs_df.columns:
@@ -674,38 +699,50 @@ def render_market_data_page(asset, all_selected_assets=None, selected_exchanges=
                             # First try to load the price OHLC history data
                             price_history_df = None
                             
-                            # Try loading price OHLC data directly from the file
+                            # Try loading spot price history data first
                             try:
-                                logger.info("Attempting to load price OHLC data directly from file")
-                                price_history_path = os.path.join(DATA_BASE_PATH, get_latest_data_directory(), 'futures', 'market', 'api_price_ohlc_history.parquet')
+                                logger.info("Attempting to load spot price history data")
+                                # Try to load the spot price history file for the current asset
+                                spot_price_history_path = os.path.join(DATA_BASE_PATH, get_latest_data_directory(), 'spot', 'spot_market', f'api_spot_price_history_{asset}.parquet')
                                 
-                                if os.path.exists(price_history_path):
-                                    logger.info(f"Loading price history from: {price_history_path}")
-                                    price_history_df = pd.read_parquet(price_history_path)
-                                    logger.info(f"Successfully loaded price history data: {len(price_history_df)} rows")
+                                if os.path.exists(spot_price_history_path):
+                                    logger.info(f"Loading spot price history from: {spot_price_history_path}")
+                                    price_history_df = pd.read_parquet(spot_price_history_path)
+                                    logger.info(f"Successfully loaded spot price history data: {len(price_history_df)} rows")
                                     
                                     # Log the first few rows to see what the data looks like
-                                    logger.info(f"Price history first rows: {price_history_df.head(2).to_dict()}")
+                                    logger.info(f"Spot price history first rows: {price_history_df.head(2).to_dict()}")
                                     
                                     # Log the data types
-                                    logger.info(f"Price history data types: {price_history_df.dtypes}")
+                                    logger.info(f"Spot price history data types: {price_history_df.dtypes}")
                                 else:
-                                    logger.warning(f"Price history file not found at: {price_history_path}")
+                                    logger.warning(f"Spot price history file not found at: {spot_price_history_path}")
                                     
-                                    # Try the load_data_for_category approach as fallback
-                                    logger.info(f"Falling back to loading price history data for {asset} from futures/market")
-                                    futures_market_data = load_data_for_category('futures', 'market', asset)
+                                    # Fallback to futures price OHLC data
+                                    logger.info("Falling back to futures price OHLC data")
+                                    price_history_path = os.path.join(DATA_BASE_PATH, get_latest_data_directory(), 'futures', 'market', 'api_price_ohlc_history.parquet')
                                     
-                                    # Log available keys in futures market data
-                                    logger.info(f"Futures market data keys: {list(futures_market_data.keys() if futures_market_data else [])}")
-                                    
-                                    # Check if price data exists
-                                    if futures_market_data and 'api_price_ohlc_history' in futures_market_data and not futures_market_data['api_price_ohlc_history'].empty:
-                                        price_history_df = futures_market_data['api_price_ohlc_history'].copy()
-                                        logger.info(f"Found price history data via category loader: {len(price_history_df)} rows")
+                                    if os.path.exists(price_history_path):
+                                        logger.info(f"Loading price history from: {price_history_path}")
+                                        price_history_df = pd.read_parquet(price_history_path)
+                                        logger.info(f"Successfully loaded price history data: {len(price_history_df)} rows")
                                     else:
-                                        logger.warning(f"No price history data found for {asset} through either method")
-                                        price_history_df = None
+                                        logger.warning(f"Price history file not found at: {price_history_path}")
+                                        
+                                        # Try the load_data_for_category approach as secondary fallback
+                                        logger.info(f"Trying to load price history data for {asset} from category loader")
+                                        futures_market_data = load_data_for_category('futures', 'market', asset)
+                                    
+                                        # Log available keys in futures market data
+                                        logger.info(f"Futures market data keys: {list(futures_market_data.keys() if futures_market_data else [])}")
+                                        
+                                        # Check if price data exists
+                                        if futures_market_data and 'api_price_ohlc_history' in futures_market_data and not futures_market_data['api_price_ohlc_history'].empty:
+                                            price_history_df = futures_market_data['api_price_ohlc_history'].copy()
+                                            logger.info(f"Found price history data via category loader: {len(price_history_df)} rows")
+                                        else:
+                                            logger.warning(f"No price history data found for {asset} through any method")
+                                            price_history_df = None
                             except Exception as load_error:
                                 logger.error(f"Error loading price history data: {load_error}", exc_info=True)
                                 price_history_df = None
@@ -1749,7 +1786,7 @@ def main():
     render_sidebar()
 
     # Page title
-    st.title("Cryptocurrency Spot Markets")
+    st.title("Spot")
 
     # Get available assets for spot category
     available_assets = get_available_assets_for_category('spot')

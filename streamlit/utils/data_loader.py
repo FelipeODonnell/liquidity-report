@@ -341,7 +341,7 @@ def process_timestamps(df, timestamp_col=None, keep_original=True):
                         pass
 
                 # If it's a simple list of values (not dictionaries), create a data_list column
-                if isinstance(sample, list) and (len(sample) == 0 or not isinstance(sample[0], dict)):
+                if isinstance(sample, list) and (len(sample) == 0 or (len(sample) > 0 and not isinstance(sample[0], dict))):
                     logger.info("Detected simple list of values, creating data_list column")
                     # Convert all list values to regular python lists if needed
                     result['data_list'] = result['list'].apply(
@@ -379,6 +379,11 @@ def process_timestamps(df, timestamp_col=None, keep_original=True):
                                 logger.warning(f"Empty array or conversion failed for row {idx}")
                         except Exception as e_shape:
                             logger.warning(f"Could not process array for row {idx}: {e_shape}")
+                
+                # Handle case where items is a dictionary instead of a list of dictionaries
+                if isinstance(items, dict):
+                    logger.info(f"Row {idx}: 'list' column contains a dictionary instead of a list, converting to list format")
+                    items = [items]  # Convert to a list containing the dictionary
 
                 if isinstance(items, list):
                     for item in items:
@@ -451,6 +456,11 @@ def process_timestamps(df, timestamp_col=None, keep_original=True):
                                 except Exception as e_shape:
                                     logger.warning(f"Could not process multidimensional stablecoin_margin_list for {symbol}: {e_shape}")
                                     margin_list = []
+                        
+                        # Handle case where margin_list is a dictionary instead of a list
+                        if isinstance(margin_list, dict):
+                            logger.info(f"Symbol {symbol}: stablecoin_margin_list contains a dictionary instead of a list, converting to list format")
+                            margin_list = [margin_list]  # Convert to a list containing the dictionary
 
                         if isinstance(margin_list, list):
                             for item in margin_list:
@@ -460,6 +470,7 @@ def process_timestamps(df, timestamp_col=None, keep_original=True):
                                     item_dict['margin_type'] = 'stablecoin'
                                     normalized_data.append(item_dict)
                         elif isinstance(margin_list, dict):
+                            # This should not be reached due to the conversion above, but kept for robustness
                             item_dict = margin_list.copy()
                             item_dict['symbol'] = symbol
                             item_dict['margin_type'] = 'stablecoin'
@@ -504,6 +515,11 @@ def process_timestamps(df, timestamp_col=None, keep_original=True):
                                 except Exception as e_shape:
                                     logger.warning(f"Could not process multidimensional token_margin_list for {symbol}: {e_shape}")
                                     margin_list = []
+                        
+                        # Handle case where margin_list is a dictionary instead of a list
+                        if isinstance(margin_list, dict):
+                            logger.info(f"Symbol {symbol}: token_margin_list contains a dictionary instead of a list, converting to list format")
+                            margin_list = [margin_list]  # Convert to a list containing the dictionary
 
                         if isinstance(margin_list, list):
                             for item in margin_list:
@@ -513,6 +529,7 @@ def process_timestamps(df, timestamp_col=None, keep_original=True):
                                     item_dict['margin_type'] = 'token'
                                     normalized_data.append(item_dict)
                         elif isinstance(margin_list, dict):
+                            # This should not be reached due to the conversion above, but kept for robustness
                             item_dict = margin_list.copy()
                             item_dict['symbol'] = symbol
                             item_dict['margin_type'] = 'token'

@@ -49,7 +49,7 @@ from utils.formatters import (
     format_timestamp,
     humanize_time_diff
 )
-from utils.config import APP_TITLE, APP_ICON, ASSET_COLORS
+from utils.config import APP_TITLE, APP_ICON, ASSET_COLORS, DATA_BASE_PATH
 
 # Set page config with title and icon
 st.set_page_config(
@@ -217,16 +217,16 @@ def render_funding_rate_page(asset, all_selected_assets=None, selected_exchanges
                 # Check if required columns exist - depending on how the data was normalized
                 # For direct column format
                 if 'symbol' in fr_df.columns and 'funding_rate' in fr_df.columns:
-                    # Filter for the selected asset
-                    asset_fr = fr_df[fr_df['symbol'].str.contains(asset, case=False, na=False)]
+                    # Filter for the selected asset (exact match only)
+                    asset_fr = fr_df[fr_df['symbol'].str.upper() == asset.upper()]
                     
                     # Filter by selected exchanges if needed (if not "All")
                     if selected_exchanges and "All" not in selected_exchanges:
                         asset_fr = asset_fr[asset_fr['exchange_name'].isin(selected_exchanges)]
                 # For normalized exchange list format
                 elif 'symbol' in fr_df.columns and 'exchange_name' in fr_df.columns:
-                    # Filter for the selected asset
-                    asset_fr = fr_df[fr_df['symbol'].str.contains(asset, case=False, na=False)]
+                    # Filter for the selected asset (exact match only)
+                    asset_fr = fr_df[fr_df['symbol'].str.upper() == asset.upper()]
                     
                     # Filter by selected exchanges if needed (if not "All")
                     if selected_exchanges and "All" not in selected_exchanges:
@@ -295,70 +295,504 @@ def render_funding_rate_page(asset, all_selected_assets=None, selected_exchanges
                         display_df[display_columns],
                         format_dict=format_dict
                     )
-
-                    # Funding rate distribution chart
-                    st.subheader("Funding Rate Distribution by Exchange")
                     
-                    try:
-                        # Store available exchanges for filter
-                        available_exchanges = sorted(display_df['exchange_name'].unique().tolist())
-                        st.session_state.funding_rate_available_exchanges = ["All"] + available_exchanges
-                        
-                        # Create a container for the chart
-                        chart_container = st.container()
-                        
-                        # Create the exchange selector above the chart
-                        exchange_filter = st.selectbox(
-                            "Select Exchange",
-                            ["All"] + available_exchanges,
-                            key=f"funding_rate_distribution_exchange_filter_{asset}"
+                    # Add a new section for Funding Rate History by Exchange
+                    st.subheader("Funding Rate History by Exchange")
+                    
+                    # Create a container for the filters
+                    filter_container = st.container()
+                    filter_col1, filter_col2, filter_col3 = filter_container.columns([2, 1, 1])
+                    
+                    # Define time ranges (max 6M)
+                    time_range_options = {
+                        "1D": 1,
+                        "1W": 7,
+                        "1M": 30,
+                        "3M": 90,
+                        "6M": 180,
+                        "All": 180  # Changed to also be 6M (180 days)
+                    }
+                    
+                    # Create time range selector
+                    with filter_col1:
+                        selected_time_range = st.selectbox(
+                            "Select Time Range",
+                            list(time_range_options.keys()),
+                            index=list(time_range_options.keys()).index("1M"),
+                            key=f"funding_rate_time_range_{asset}"
                         )
                         
-                        # Filter data based on selection
-                        filtered_df = display_df
-                        if exchange_filter != "All":
-                            filtered_df = display_df[display_df['exchange_name'] == exchange_filter]
+                    # Add range selectors for y-axis
+                    with filter_col2:
+                        y_min = st.number_input(
+                            "Y-Axis Min (basis points)",
+                            value=-10,
+                            step=5,
+                            key=f"funding_rate_y_min_{asset}"
+                        )
                         
-                        # Sort by funding rate value for better visualization
-                        filtered_df = filtered_df.sort_values('funding_rate', ascending=False)
+                    with filter_col3:
+                        y_max = st.number_input(
+                            "Y-Axis Max (basis points)",
+                            value=1000,
+                            step=50,
+                            key=f"funding_rate_y_max_{asset}"
+                        )
+                    
+                    # Store in session state for other parts of the app
+                    st.session_state.funding_rate_time_range = selected_time_range
+                    st.session_state.selected_time_range = selected_time_range
+                    
+                    # Process exchange-specific funding rate history data
+                    funding_history_dfs = {}
+                    available_exchanges = []
+                    
+                    # Find all funding rate history files for this asset
+                    for key in data.keys():
+                        if f"api_futures_fundingRate_ohlc_history_{asset}_" in key:
+                            # Extract exchange name from key
+                            exchange_name = key.split(f"api_futures_fundingRate_ohlc_history_{asset}_")[1].replace(".parquet", "")
+                            
+                            # Process the data
+                            df = data[key]
+                            if not df.empty:
+                                # Convert timestamp to datetime
+                                df = process_timestamps(df, timestamp_col="time")
+                                
+                                # Add to the collection
+                                funding_history_dfs[exchange_name] = df
+                                available_exchanges.append(exchange_name)
+                    
+                    if funding_history_dfs:
+                        # Create the figure
+                        fig = go.Figure()
                         
-                        # Create the chart with filtered data
-                        fig = px.bar(
-                            filtered_df,
-                            x='exchange_name',
-                            y='funding_rate',
-                            color='funding_rate',
-                            color_continuous_scale='RdBu',
-                            color_continuous_midpoint=0,
-                            title=f"{asset} Funding Rates by Exchange (%)"
+                        # Apply time filter
+                        days_filter = time_range_options[selected_time_range]
+                        cutoff_date = None
+                        
+                        if days_filter:
+                            cutoff_date = pd.Timestamp.now() - pd.Timedelta(days=days_filter)
+                        
+                        # Add a trace for each exchange
+                        for exchange, df in funding_history_dfs.items():
+                            # Apply time filter if specified
+                            if cutoff_date and 'datetime' in df.columns:
+                                filtered_df = df[df['datetime'] >= cutoff_date]
+                            else:
+                                filtered_df = df
+                            
+                            # Skip if filtered data is empty
+                            if filtered_df.empty:
+                                continue
+                            
+                            # Apply filter based on selected exchanges
+                            if "All" not in selected_exchanges and exchange not in selected_exchanges:
+                                continue
+                            
+                            # Add trace - use raw values, already in percentage
+                            fig.add_trace(go.Scatter(
+                                x=filtered_df['datetime'],
+                                y=filtered_df['close'],  # Use raw values, already in percentage
+                                mode='lines',  # Only use lines mode, no markers or text
+                                name=exchange,
+                                line=dict(width=2),
+                                hovertemplate='%{y:.4f}<extra></extra>',  # No % symbol in hover
+                                showlegend=True  # Show the legend for exchange color matching
+                            ))
+                        
+                        # Add a zero line - using filtered date range if applicable
+                        if cutoff_date:
+                            x0 = cutoff_date
+                            x1 = pd.Timestamp.now()
+                        else:
+                            # Use full date range
+                            x0 = min([df['datetime'].min() for df in funding_history_dfs.values() if not df.empty])
+                            x1 = max([df['datetime'].max() for df in funding_history_dfs.values() if not df.empty])
+                        
+                        fig.add_shape(
+                            type="line",
+                            x0=x0,
+                            y0=0,
+                            x1=x1,
+                            y1=0,
+                            line=dict(color="gray", width=1, dash="dash"),
                         )
                         
                         # Update layout
                         fig.update_layout(
+                            title=f"{asset} Funding Rate History by Exchange (in basis points)",
                             xaxis_title=None,
-                            yaxis_title="Funding Rate (%)",
-                            height=500,  # Ensure consistent height
-                            xaxis={'categoryorder':'total descending'}  # Order bars by funding rate
+                            yaxis_title="Funding Rate (basis points)",  # Specify basis points
+                            hovermode="x unified",
+                            showlegend=True,  # Show the legend
+                            legend=dict(
+                                orientation="h",
+                                yanchor="bottom", 
+                                y=1.02,
+                                xanchor="right",
+                                x=1,
+                                font=dict(size=10),
+                                itemsizing="constant",
+                                itemwidth=30
+                            )
                         )
                         
-                        # Apply theme and display chart
-                        themed_fig = apply_chart_theme(fig)
-                        chart_container.plotly_chart(themed_fig, use_container_width=True)
-                        
-                        # Show number of exchanges displayed
-                        num_exchanges = len(filtered_df)
-                        if exchange_filter == "All":
-                            st.caption(f"Showing all {num_exchanges} exchanges with funding rate data")
+                        # Format y-axis using user-provided range values (in basis points)
+                        # Generate tick values based on the range
+                        range_size = y_max - y_min
+                        # Determine appropriate tick spacing based on range size
+                        if range_size <= 50:
+                            tick_step = 5
+                        elif range_size <= 200:
+                            tick_step = 20
+                        elif range_size <= 1000:
+                            tick_step = 100
                         else:
-                            st.caption(f"Showing funding rate for {exchange_filter}")
-                    except Exception as e:
-                        st.error(f"Error displaying funding rate distribution: {e}")
-                        logger.error(f"Error in funding rate distribution chart: {e}")
+                            tick_step = 200
+                            
+                        # Generate tick values and labels
+                        tick_vals = list(range(y_min, y_max + 1, tick_step))
+                        tick_text = [str(val) for val in tick_vals]
+                        
+                        # Update the y-axis
+                        fig.update_yaxes(
+                            range=[y_min, y_max],  # Use user-provided range
+                            tickvals=tick_vals,   # Dynamic tick values
+                            ticktext=tick_text,   # Dynamic tick labels
+                            title="Funding Rate (basis points)"  # Note that values are in basis points
+                        )
+                        
+                        # Apply theme and display
+                        fig = apply_chart_theme(fig)
+                        st.plotly_chart(fig, use_container_width=True)
+                        
+                        # Add explanation with exchange color key
+                        with st.expander("About Funding Rates"):
+                            # Create a color key
+                            st.markdown("**Funding Rates Explained:**")
+                            st.markdown("""
+                            - Funding rates are periodic payments between long and short positions in perpetual futures contracts.
+                            - Values are shown in basis points (1 basis point = 0.01%).
+                            - A value of 100 means 1%, 1000 means 10%, etc.
+                            - Positive rates indicate longs pay shorts (bullish sentiment).
+                            - Negative rates indicate shorts pay longs (bearish sentiment).
+                            - Rates are typically charged every 8 hours, but this varies by exchange.
+                            - Higher absolute values indicate stronger market sentiment in either direction.
+                            """)
+                            
+                            # Create a color key for exchanges
+                            st.markdown("**Exchange Color Key:**")
+                            
+                            # Get the exchanges actually being displayed
+                            visible_exchanges = []
+                            for exchange in available_exchanges:
+                                if "All" in selected_exchanges or exchange in selected_exchanges:
+                                    visible_exchanges.append(exchange)
+                            
+                            # Create columns for the color key
+                            if visible_exchanges:
+                                # Use 3 columns for the display
+                                key_cols = st.columns(3)
+                                for i, exchange in enumerate(visible_exchanges):
+                                    col_idx = i % 3  # Distribute across 3 columns
+                                    with key_cols[col_idx]:
+                                        # Get color from Plotly's default color sequence
+                                        color_idx = i % 10  # Plotly uses 10 default colors
+                                        colors = ['#636EFA', '#EF553B', '#00CC96', '#AB63FA', '#FFA15A', 
+                                                 '#19D3F3', '#FF6692', '#B6E880', '#FF97FF', '#FECB52']
+                                        color = colors[color_idx]
+                                        st.markdown(f"<span style='color:{color}'>●</span> {exchange}", unsafe_allow_html=True)
+                            else:
+                                st.info("No exchanges currently selected")
+                    else:
+                        st.info(f"No detailed funding rate history data available for {asset} by exchange. This chart would show how funding rates have changed over time across different exchanges.")
                     
+                    # Add a new section for Open Interest Weighted Funding Rate
+                    st.subheader("Funding Rate History - Open Interest Weighted")
                     
-                    # Set defaults in session state for backward compatibility
-                    st.session_state.funding_rate_time_range = 'All'
-                    st.session_state.selected_time_range = 'All'
+                    # Create a container for the filters
+                    oi_filter_container = st.container()
+                    oi_filter_col1, oi_filter_col2, oi_filter_col3 = oi_filter_container.columns([2, 1, 1])
+                    
+                    # Define time ranges (max 6M) - reuse the same options 
+                    # as the exchange section for consistency
+                    
+                    # Create time range selector
+                    with oi_filter_col1:
+                        oi_selected_time_range = st.selectbox(
+                            "Select Time Range",
+                            list(time_range_options.keys()),
+                            index=list(time_range_options.keys()).index("1M"),
+                            key=f"oi_funding_rate_time_range_{asset}"
+                        )
+                        
+                    # Add range selectors for y-axis
+                    with oi_filter_col2:
+                        oi_y_min = st.number_input(
+                            "Y-Axis Min (basis points)",
+                            value=-10,
+                            step=5,
+                            key=f"oi_funding_rate_y_min_{asset}"
+                        )
+                        
+                    with oi_filter_col3:
+                        oi_y_max = st.number_input(
+                            "Y-Axis Max (basis points)",
+                            value=1000,
+                            step=50,
+                            key=f"oi_funding_rate_y_max_{asset}"
+                        )
+                    
+                    # Process OI-weighted funding rate history data
+                    oi_funding_history_df = None
+                    oi_key = f"api_futures_fundingRate_oi_weight_ohlc_history_{asset}"
+                    
+                    # Check if the OI-weighted file exists
+                    if oi_key in data and not data[oi_key].empty:
+                        # Process the data
+                        oi_funding_history_df = process_timestamps(data[oi_key], timestamp_col="time")
+                        
+                        # Apply time filter
+                        days_filter = time_range_options[oi_selected_time_range]
+                        cutoff_date = None
+                        
+                        if days_filter:
+                            cutoff_date = pd.Timestamp.now() - pd.Timedelta(days=days_filter)
+                            
+                        # Filter the data by time if needed
+                        if cutoff_date and 'datetime' in oi_funding_history_df.columns:
+                            oi_filtered_df = oi_funding_history_df[oi_funding_history_df['datetime'] >= cutoff_date]
+                        else:
+                            oi_filtered_df = oi_funding_history_df
+                            
+                        if not oi_filtered_df.empty:
+                            # Create the figure
+                            fig = go.Figure()
+                            
+                            # Add trace for the OI-weighted funding rate
+                            fig.add_trace(go.Scatter(
+                                x=oi_filtered_df['datetime'],
+                                y=oi_filtered_df['close'],  # Use raw values, already in percentage
+                                mode='lines',  # Only use lines mode, no markers or text
+                                name="OI-Weighted",
+                                line=dict(width=3, color="#00CC96"),  # Make it stand out with a distinct color
+                                hovertemplate='%{y:.4f}<extra></extra>',  # No % symbol in hover
+                            ))
+                            
+                            # Add a zero line - using filtered date range
+                            if cutoff_date:
+                                x0 = cutoff_date
+                                x1 = pd.Timestamp.now()
+                            else:
+                                # Use full date range
+                                x0 = oi_filtered_df['datetime'].min()
+                                x1 = oi_filtered_df['datetime'].max()
+                            
+                            fig.add_shape(
+                                type="line",
+                                x0=x0,
+                                y0=0,
+                                x1=x1,
+                                y1=0,
+                                line=dict(color="gray", width=1, dash="dash"),
+                            )
+                            
+                            # Update layout
+                            fig.update_layout(
+                                title=f"{asset} Open Interest Weighted Funding Rate History (in basis points)",
+                                xaxis_title=None,
+                                yaxis_title="Funding Rate (basis points)",  # Specify basis points
+                                hovermode="x unified",
+                            )
+                            
+                            # Format y-axis using user-provided range values (in basis points)
+                            # Generate tick values based on the range
+                            range_size = oi_y_max - oi_y_min
+                            # Determine appropriate tick spacing based on range size
+                            if range_size <= 50:
+                                tick_step = 5
+                            elif range_size <= 200:
+                                tick_step = 20
+                            elif range_size <= 1000:
+                                tick_step = 100
+                            else:
+                                tick_step = 200
+                                
+                            # Generate tick values and labels
+                            tick_vals = list(range(oi_y_min, oi_y_max + 1, tick_step))
+                            tick_text = [str(val) for val in tick_vals]
+                            
+                            # Update the y-axis
+                            fig.update_yaxes(
+                                range=[oi_y_min, oi_y_max],  # Use user-provided range
+                                tickvals=tick_vals,   # Dynamic tick values
+                                ticktext=tick_text,   # Dynamic tick labels
+                                title="Funding Rate (basis points)"  # Note that values are in basis points
+                            )
+                            
+                            # Apply theme and display
+                            fig = apply_chart_theme(fig)
+                            st.plotly_chart(fig, use_container_width=True)
+                            
+                            # Add explanation for OI-weighted funding rates
+                            with st.expander("About OI-Weighted Funding Rates"):
+                                st.markdown("**Open Interest Weighted Funding Rates Explained:**")
+                                st.markdown("""
+                                - This chart shows funding rates weighted by the Open Interest of each exchange.
+                                - Exchanges with higher open interest contribute more to the weighted average.
+                                - Values are shown in basis points (1 basis point = 0.01%).
+                                - A value of 100 means 1%, 1000 means 10%, etc.
+                                - Positive rates indicate longs pay shorts (bullish sentiment).
+                                - Negative rates indicate shorts pay longs (bearish sentiment).
+                                - This measure provides a more volume-representative view of market sentiment than simple averages.
+                                """)
+                        else:
+                            st.info(f"No data available for the selected time range.")
+                    else:
+                        st.info(f"No Open Interest weighted funding rate data available for {asset}.")
+                    
+                    # Add a new section for Volume Weighted Funding Rate
+                    st.subheader("Funding Rate History - Volume Weighted")
+                    
+                    # Create a container for the filters
+                    vol_filter_container = st.container()
+                    vol_filter_col1, vol_filter_col2, vol_filter_col3 = vol_filter_container.columns([2, 1, 1])
+                    
+                    # Create time range selector (reuse the same options)
+                    with vol_filter_col1:
+                        vol_selected_time_range = st.selectbox(
+                            "Select Time Range",
+                            list(time_range_options.keys()),
+                            index=list(time_range_options.keys()).index("1M"),
+                            key=f"vol_funding_rate_time_range_{asset}"
+                        )
+                        
+                    # Add range selectors for y-axis
+                    with vol_filter_col2:
+                        vol_y_min = st.number_input(
+                            "Y-Axis Min (basis points)",
+                            value=-10,
+                            step=5,
+                            key=f"vol_funding_rate_y_min_{asset}"
+                        )
+                        
+                    with vol_filter_col3:
+                        vol_y_max = st.number_input(
+                            "Y-Axis Max (basis points)",
+                            value=1000,
+                            step=50,
+                            key=f"vol_funding_rate_y_max_{asset}"
+                        )
+                    
+                    # Process volume-weighted funding rate history data
+                    vol_funding_history_df = None
+                    vol_key = f"api_futures_fundingRate_vol_weight_ohlc_history_{asset}"
+                    
+                    # Check if the volume-weighted file exists
+                    if vol_key in data and not data[vol_key].empty:
+                        # Process the data
+                        vol_funding_history_df = process_timestamps(data[vol_key], timestamp_col="time")
+                        
+                        # Apply time filter
+                        days_filter = time_range_options[vol_selected_time_range]
+                        cutoff_date = None
+                        
+                        if days_filter:
+                            cutoff_date = pd.Timestamp.now() - pd.Timedelta(days=days_filter)
+                            
+                        # Filter the data by time if needed
+                        if cutoff_date and 'datetime' in vol_funding_history_df.columns:
+                            vol_filtered_df = vol_funding_history_df[vol_funding_history_df['datetime'] >= cutoff_date]
+                        else:
+                            vol_filtered_df = vol_funding_history_df
+                            
+                        if not vol_filtered_df.empty:
+                            # Create the figure
+                            fig = go.Figure()
+                            
+                            # Add trace for the volume-weighted funding rate
+                            fig.add_trace(go.Scatter(
+                                x=vol_filtered_df['datetime'],
+                                y=vol_filtered_df['close'],  # Use raw values, already in percentage
+                                mode='lines',  # Only use lines mode, no markers or text
+                                name="Volume-Weighted",
+                                line=dict(width=3, color="#FF6692"),  # Make it stand out with a distinct color
+                                hovertemplate='%{y:.4f}<extra></extra>',  # No % symbol in hover
+                            ))
+                            
+                            # Add a zero line - using filtered date range
+                            if cutoff_date:
+                                x0 = cutoff_date
+                                x1 = pd.Timestamp.now()
+                            else:
+                                # Use full date range
+                                x0 = vol_filtered_df['datetime'].min()
+                                x1 = vol_filtered_df['datetime'].max()
+                            
+                            fig.add_shape(
+                                type="line",
+                                x0=x0,
+                                y0=0,
+                                x1=x1,
+                                y1=0,
+                                line=dict(color="gray", width=1, dash="dash"),
+                            )
+                            
+                            # Update layout
+                            fig.update_layout(
+                                title=f"{asset} Volume Weighted Funding Rate History (in basis points)",
+                                xaxis_title=None,
+                                yaxis_title="Funding Rate (basis points)",  # Specify basis points
+                                hovermode="x unified",
+                            )
+                            
+                            # Format y-axis using user-provided range values (in basis points)
+                            # Generate tick values based on the range
+                            range_size = vol_y_max - vol_y_min
+                            # Determine appropriate tick spacing based on range size
+                            if range_size <= 50:
+                                tick_step = 5
+                            elif range_size <= 200:
+                                tick_step = 20
+                            elif range_size <= 1000:
+                                tick_step = 100
+                            else:
+                                tick_step = 200
+                                
+                            # Generate tick values and labels
+                            tick_vals = list(range(vol_y_min, vol_y_max + 1, tick_step))
+                            tick_text = [str(val) for val in tick_vals]
+                            
+                            # Update the y-axis
+                            fig.update_yaxes(
+                                range=[vol_y_min, vol_y_max],  # Use user-provided range
+                                tickvals=tick_vals,   # Dynamic tick values
+                                ticktext=tick_text,   # Dynamic tick labels
+                                title="Funding Rate (basis points)"  # Note that values are in basis points
+                            )
+                            
+                            # Apply theme and display
+                            fig = apply_chart_theme(fig)
+                            st.plotly_chart(fig, use_container_width=True)
+                            
+                            # Add explanation for volume-weighted funding rates
+                            with st.expander("About Volume-Weighted Funding Rates"):
+                                st.markdown("**Volume Weighted Funding Rates Explained:**")
+                                st.markdown("""
+                                - This chart shows funding rates weighted by the trading volume of each exchange.
+                                - Exchanges with higher trading volume contribute more to the weighted average.
+                                - Values are shown in basis points (1 basis point = 0.01%).
+                                - A value of 100 means 1%, 1000 means 10%, etc.
+                                - Positive rates indicate longs pay shorts (bullish sentiment).
+                                - Negative rates indicate shorts pay longs (bearish sentiment).
+                                - This measure highlights the funding rates in the most actively traded markets.
+                                """)
+                        else:
+                            st.info(f"No data available for the selected time range.")
+                    else:
+                        st.info(f"No Volume weighted funding rate data available for {asset}.")
+                    
                 else:
                     st.info(f"No funding rate data available for {asset}.")
             except Exception as e:
@@ -522,30 +956,7 @@ def render_liquidation_page(asset, all_selected_assets=None, selected_exchanges=
                     else:
                         total_change = None
 
-                    # Create metrics
-                    metrics = {
-                        "Total Liquidations": {
-                            "value": total_liq,
-                            "delta": total_change,
-                            "delta_suffix": "%"
-                        },
-                        "Long Liquidations": {
-                            "value": long_liq,
-                            "delta": None
-                        },
-                        "Short Liquidations": {
-                            "value": short_liq,
-                            "delta": None
-                        }
-                    }
-
-                    formatters = {
-                        "Total Liquidations": lambda x: format_currency(x, abbreviate=True),
-                        "Long Liquidations": lambda x: format_currency(x, abbreviate=True),
-                        "Short Liquidations": lambda x: format_currency(x, abbreviate=True)
-                    }
-
-                    display_metrics_row(metrics, formatters)
+                    # Stats section removed as requested
                 else:
                     st.warning(f"Liquidation data is missing required columns. Available columns: {list(liq_df.columns)}")
 
@@ -676,6 +1087,9 @@ def render_liquidation_page(asset, all_selected_assets=None, selected_exchanges=
             # Check if we have the required columns now
             required_cols = ['exchange_name', 'total_liquidation_usd', 'long_liquidation_usd', 'short_liquidation_usd']
             if all(col in exchange_liq_df.columns for col in required_cols):
+                # Exclude the 'all' row as requested
+                exchange_liq_df = exchange_liq_df[~exchange_liq_df['exchange_name'].str.lower().isin(['all', 'ALL', 'All'])]
+                
                 # Sort by total liquidation
                 exchange_liq_df = exchange_liq_df.sort_values(by='total_liquidation_usd', ascending=False)
 
@@ -698,7 +1112,8 @@ def render_liquidation_page(asset, all_selected_assets=None, selected_exchanges=
                     'exchange_name',
                     f"{asset} Liquidations Distribution by Exchange",
                     show_top_n=8,  # Show top 8 exchanges
-                    min_percent=2.0  # Group exchanges with less than 2% share
+                    min_percent=2.0,  # Group exchanges with less than 2% share
+                    exclude_names=["All", "all", "ALL"]  # Ensure 'all' is excluded
                 )
 
                 display_chart(fig)
@@ -707,6 +1122,7 @@ def render_liquidation_page(asset, all_selected_assets=None, selected_exchanges=
                 # Create stacked bar chart showing long vs short by exchange
                 st.subheader("Long vs. Short Liquidations by Exchange")
 
+                # We already filtered out 'All' row from exchange_liq_df earlier
                 top_exchanges = exchange_liq_df.head(10).copy()  # Top 10 exchanges
 
                 # Melt dataframe for stacked bar chart
@@ -823,7 +1239,7 @@ def render_liquidation_page(asset, all_selected_assets=None, selected_exchanges=
             logger.error(f"Error processing liquidation orders: {e}")
             st.error(f"Error processing liquidation orders: {e}")
     else:
-        st.info("No liquidation order data available.")
+        st.info("Binance exchange data shown.")
 
 def render_open_interest_page(asset, all_selected_assets=None, selected_exchanges=None, selected_time_range=None):
     """Render the open interest page for the specified asset and selected exchanges.
@@ -939,6 +1355,14 @@ def render_open_interest_page(asset, all_selected_assets=None, selected_exchange
             # Open interest by exchange
             st.subheader(f"{asset} Open Interest by Exchange")
 
+            # Exclude the 'all' row as requested
+            oi_exchange_df = oi_exchange_df[~oi_exchange_df['exchange_name'].str.lower().isin(['all', 'ALL', 'All'])]
+            
+            # Recalculate market share percentages after excluding 'all' row
+            if 'market_share_percent' in oi_exchange_df.columns:
+                total_oi = oi_exchange_df['open_interest_usd'].sum()
+                oi_exchange_df['market_share_percent'] = (oi_exchange_df['open_interest_usd'] / total_oi * 100)
+            
             # Sort by open interest
             oi_exchange_df = oi_exchange_df.sort_values(by='open_interest_usd', ascending=False)
 
@@ -977,7 +1401,8 @@ def render_open_interest_page(asset, all_selected_assets=None, selected_exchange
                 'exchange_name',
                 f"{asset} Open Interest Distribution by Exchange",
                 show_top_n=8,  # Show top 8 exchanges
-                min_percent=2.0  # Group exchanges with less than 2% share
+                min_percent=2.0,  # Group exchanges with less than 2% share
+                exclude_names=["All", "all", "ALL"]  # Ensure 'all' is excluded
             )
             
             display_chart(fig)
@@ -986,41 +1411,22 @@ def render_open_interest_page(asset, all_selected_assets=None, selected_exchange
         st.info(f"No exchange open interest data available for {asset}.")
     
     # Open interest history
-    st.subheader(f"{asset} Open Interest History")
-    
+    st.subheader(f"{asset} Open Interest History (Coin-Margined)")
     
     # Set defaults in session state for backward compatibility
     st.session_state.oi_time_range = 'All'
     st.session_state.selected_time_range = 'All'
 
-    oi_type = st.radio(
-        "Open Interest Type",
-        ["Total", "Coin-Margined", "Stablecoin-Margined"],
-        horizontal=True
-    )
+    # Default to Coin-Margined as requested
+    oi_type = "Coin-Margined"
 
-    # Try multiple possible key formats for each type
+    # Try multiple possible key formats for Coin-Margined type
     oi_history_df = None
-    possible_history_keys = []
-
-    if oi_type == "Total":
-        possible_history_keys = [
-            f"api_futures_openInterest_ohlc_aggregated_history_{asset}_{asset}",
-            f"api_futures_openInterest_ohlc_aggregated_history_{asset}",
-            "api_futures_openInterest_ohlc_aggregated_history"
-        ]
-    elif oi_type == "Coin-Margined":
-        possible_history_keys = [
-            f"api_futures_openInterest_ohlc_aggregated_coin_margin_history_{asset}_{asset}",
-            f"api_futures_openInterest_ohlc_aggregated_coin_margin_history_{asset}",
-            "api_futures_openInterest_ohlc_aggregated_coin_margin_history"
-        ]
-    else:  # Stablecoin-Margined
-        possible_history_keys = [
-            f"api_futures_openInterest_ohlc_aggregated_stablecoin_{asset}_{asset}",
-            f"api_futures_openInterest_ohlc_aggregated_stablecoin_{asset}",
-            "api_futures_openInterest_ohlc_aggregated_stablecoin"
-        ]
+    possible_history_keys = [
+        f"api_futures_openInterest_ohlc_aggregated_coin_margin_history_{asset}_{asset}",
+        f"api_futures_openInterest_ohlc_aggregated_coin_margin_history_{asset}",
+        "api_futures_openInterest_ohlc_aggregated_coin_margin_history"
+    ]
 
     # Try each key format until we find data
     oi_history_df = None
@@ -1135,89 +1541,7 @@ def render_open_interest_page(asset, all_selected_assets=None, selected_exchange
         # If we couldn't find any data
         st.info(f"No {oi_type.lower()} open interest history data available for {asset}.")
     
-    # Open interest history by exchange if available
-    # Try multiple possible key formats
-    oi_exchange_history_df = None
-    possible_exchange_keys = [
-        f"api_futures_openInterest_exchange_history_chart_{asset}_{asset}",
-        f"api_futures_openInterest_exchange_history_chart_{asset}",
-        "api_futures_openInterest_exchange_history_chart"
-    ]
-
-    for key in possible_exchange_keys:
-        if key in data and not data[key].empty:
-            oi_exchange_history_df = data[key]
-            # If it's a generic format, filter for the specific asset
-            if key == "api_futures_openInterest_exchange_history_chart" and 'symbol' in oi_exchange_history_df.columns:
-                oi_exchange_history_df = oi_exchange_history_df[oi_exchange_history_df['symbol'].str.contains(asset, case=False, na=False)]
-
-            # If we found data, break the loop
-            if not oi_exchange_history_df.empty:
-                break
-
-    if oi_exchange_history_df is not None and not oi_exchange_history_df.empty:
-        try:
-            st.subheader(f"{asset} Open Interest History by Exchange")
-
-            # Process dataframe
-            oi_exchange_history_df = process_timestamps(oi_exchange_history_df)
-
-            # Check required columns
-            required_cols = ['datetime', 'exchange_name', 'open_interest_usd']
-            column_mapping = {}
-
-            # Map column names if they don't match expected format
-            if 'exchange' in oi_exchange_history_df.columns and 'exchange_name' not in oi_exchange_history_df.columns:
-                column_mapping['exchange'] = 'exchange_name'
-
-            # Apply column renaming if needed
-            if column_mapping:
-                oi_exchange_history_df = oi_exchange_history_df.rename(columns=column_mapping)
-                
-            # Filter by selected exchanges if needed (if not "All")
-            if 'exchange_name' in oi_exchange_history_df.columns and selected_exchanges and "All" not in selected_exchanges:
-                oi_exchange_history_df = oi_exchange_history_df[oi_exchange_history_df['exchange_name'].isin(selected_exchanges)]
-
-            # Recheck required columns after potential renaming
-            if all(col in oi_exchange_history_df.columns for col in required_cols):
-                # Get top exchanges
-                try:
-                    # Create pivot table
-                    pivot_df = oi_exchange_history_df.pivot(index='datetime', columns='exchange_name', values='open_interest_usd')
-
-                    # Calculate average OI for ranking
-                    avg_oi = pivot_df.mean()
-                    top_exchanges = avg_oi.sort_values(ascending=False).head(5).index.tolist()
-
-                    # Check if we have enough exchanges to display
-                    if len(top_exchanges) > 0:
-                        # Create multi-line chart for top exchanges
-                        fig = px.line(
-                            pivot_df,
-                            x=pivot_df.index,
-                            y=top_exchanges,
-                            title=f"{asset} Open Interest History by Exchange (Top {len(top_exchanges)})"
-                        )
-
-                        display_chart(apply_chart_theme(fig))
-                        
-                        
-                        # Set defaults in session state for backward compatibility
-                        st.session_state.oi_exchange_history_time_range = 'All'
-                        st.session_state.selected_time_range = 'All'
-                    else:
-                        st.warning("No exchange data available after pivoting")
-                except Exception as e:
-                    logger.error(f"Error creating exchange history pivot: {e}")
-                    st.warning(f"Could not create exchange history visualization: {e}")
-            else:
-                available_cols = list(oi_exchange_history_df.columns)
-                st.warning(f"Exchange history data missing required columns. Available: {available_cols}")
-        except Exception as e:
-            logger.error(f"Error processing exchange history data: {e}")
-            st.warning(f"Could not process exchange history data: {e}")
-    else:
-        st.info(f"No open interest history by exchange data available for {asset}.")
+    # Open Interest History by Exchange section removed as requested
 
 def render_order_book_page(asset, all_selected_assets=None, selected_exchanges=None, selected_time_range=None):
     """Render the order book page for the specified asset and selected exchanges.
@@ -1893,76 +2217,7 @@ def render_market_data_page(asset, all_selected_assets=None, selected_exchanges=
     else:
         st.info(f"No trading pairs data available for {asset}.")
 
-    # Show funding rates if available
-    if 'funding_rate' in pairs_df.columns if pairs_df is not None else False:
-        try:
-            funding_df = pairs_df[pairs_df['funding_rate'].notna()].copy()
-
-            if not funding_df.empty:
-                st.subheader(f"{asset} Funding Rates by Exchange")
-
-                # Ensure funding_rate is numeric
-                funding_df['funding_rate'] = pd.to_numeric(funding_df['funding_rate'], errors='coerce')
-
-                # Filter out rows with NaN funding rates
-                funding_df = funding_df.dropna(subset=['funding_rate'])
-                
-                # Filter by selected exchanges if needed (if not "All")
-                if 'exchange_name' in funding_df.columns and selected_exchanges and "All" not in selected_exchanges:
-                    funding_df = funding_df[funding_df['exchange_name'].isin(selected_exchanges)]
-
-                if not funding_df.empty:
-                    # Sort by funding rate
-                    funding_df = funding_df.sort_values(by='funding_rate', ascending=False)
-
-                    # Prepare display dataframe with relevant columns
-                    display_cols = ['exchange_name', 'symbol', 'funding_rate']
-                    if 'next_funding_time' in funding_df.columns:
-                        display_cols.append('next_funding_time')
-
-                    # Format dictionary
-                    format_dict = {
-                        'funding_rate': lambda x: format_percentage(x * 100) if pd.notna(x) else "N/A"
-                    }
-
-                    if 'next_funding_time' in display_cols:
-                        format_dict['next_funding_time'] = lambda x: format_timestamp(x, "%Y-%m-%d %H:%M") if pd.notna(x) else "N/A"
-
-                    # Create table
-                    create_formatted_table(
-                        funding_df[display_cols],
-                        format_dict=format_dict
-                    )
-
-                    # Create bar chart for funding rates by exchange
-                    fig = px.bar(
-                        funding_df.head(15),  # Top 15 exchanges by funding rate
-                        x='exchange_name',
-                        y='funding_rate',
-                        title=f"{asset} Funding Rates by Exchange",
-                        color='funding_rate',
-                        color_continuous_scale='RdBu',
-                        color_continuous_midpoint=0
-                    )
-
-                    # Update layout
-                    fig.update_layout(
-                        xaxis_title=None,
-                        yaxis_title="Funding Rate",
-                        yaxis_tickformat='.2%'
-                    )
-
-                    # Add reference line at 0
-                    fig.add_hline(
-                        y=0,
-                        line_dash="dash",
-                        line_color="gray"
-                    )
-
-                    display_chart(apply_chart_theme(fig))
-        except Exception as e:
-            logger.error(f"Error processing funding rate data: {e}")
-            st.warning(f"Unable to display funding rate data due to formatting issues.")
+    # Funding Rates section removed as requested
 
     # If we have liquidation data in the pairs dataframe, show it
     if pairs_df is not None and 'long_liquidation_usd_24h' in pairs_df.columns and 'short_liquidation_usd_24h' in pairs_df.columns:
@@ -2042,6 +2297,201 @@ def render_market_data_page(asset, all_selected_assets=None, selected_exchanges=
             logger.error(f"Error processing liquidation data from market pairs: {e}")
             # Don't show error to user as this is a bonus chart
 
+def render_long_short_ratio_page(asset, all_selected_assets=None, selected_exchanges=None, selected_time_range=None):
+    """Render the long/short ratio page using Binance taker buy/sell volume history data.
+    
+    Parameters:
+    -----------
+    asset: str
+        Primary asset to display (BTC, ETH, SOL, or XRP)
+    all_selected_assets: list
+        List of all selected assets to display
+    selected_exchanges: list
+        List of exchanges to display data for (not used in this implementation)
+    selected_time_range: str
+        Selected time range for filtering data (not used in this implementation)
+    """
+    
+    st.header(f"{asset} Long/Short Ratio Analysis")
+    
+    # Add explanation about the data source
+    st.info("This data shows the buy/sell volume ratio from Binance futures exchange. A ratio > 1 indicates more buying pressure than selling pressure.")
+    
+    # Create path to the taker buy/sell data file
+    data_dir = get_latest_data_directory()
+    if not data_dir:
+        st.error("No data directory found.")
+        return
+        
+    file_path = os.path.join(DATA_BASE_PATH, data_dir, 'futures', 'taker_buy_sell', f'api_futures_taker_buy_sell_volume_history_{asset}.parquet')
+    
+    # Check if file exists
+    if not os.path.exists(file_path):
+        st.warning(f"No taker buy/sell volume history data available for {asset}.")
+        
+        # Show empty placeholder layout
+        col1, col2, col3 = st.columns(3)
+        with col1:
+            st.metric("Buy Volume", "$0")
+        with col2:
+            st.metric("Sell Volume", "$0")
+        with col3:
+            st.metric("Buy/Sell Ratio", "0.00")
+            
+        return
+    
+    # Load the data
+    try:
+        df = pd.read_parquet(file_path)
+        
+        if df.empty:
+            st.warning(f"The taker buy/sell volume history file for {asset} is empty.")
+            return
+            
+        # Process timestamps
+        if 'time' in df.columns:
+            # Typically these timestamps are in milliseconds
+            df['datetime'] = pd.to_datetime(df['time'], unit='ms')
+            
+        # Check for required columns
+        required_cols = ['aggregated_buy_volume_usd', 'aggregated_sell_volume_usd']
+        if not all(col in df.columns for col in required_cols):
+            available_cols = ", ".join(df.columns)
+            st.error(f"Data is missing required columns. Available columns: {available_cols}")
+            return
+            
+        # Sort by datetime
+        df = df.sort_values('datetime')
+        
+        # Calculate buy/sell ratio
+        df['buy_sell_ratio'] = df['aggregated_buy_volume_usd'] / df['aggregated_sell_volume_usd']
+        
+        # Get most recent values for metrics
+        if not df.empty:
+            recent_data = df.iloc[-1]
+            buy_volume = recent_data['aggregated_buy_volume_usd']
+            sell_volume = recent_data['aggregated_sell_volume_usd']
+            ratio = buy_volume / sell_volume if sell_volume != 0 else float('nan')
+            
+            # Display metrics
+            metrics = {
+                "Buy Volume": {
+                    "value": buy_volume,
+                    "delta": None
+                },
+                "Sell Volume": {
+                    "value": sell_volume,
+                    "delta": None
+                },
+                "Buy/Sell Ratio": {
+                    "value": ratio,
+                    "delta": None
+                }
+            }
+            
+            formatters = {
+                "Buy Volume": lambda x: format_currency(x, abbreviate=True),
+                "Sell Volume": lambda x: format_currency(x, abbreviate=True),
+                "Buy/Sell Ratio": lambda x: f"{x:.4f}" if pd.notna(x) else "N/A"
+            }
+            
+            display_metrics_row(metrics, formatters)
+        
+        # Create time series chart for buy and sell volumes
+        st.subheader(f"{asset} Buy vs Sell Volume History")
+        
+        fig = go.Figure()
+        
+        fig.add_trace(go.Scatter(
+            x=df['datetime'],
+            y=df['aggregated_buy_volume_usd'],
+            name='Buy Volume',
+            line=dict(color='green')
+        ))
+        
+        fig.add_trace(go.Scatter(
+            x=df['datetime'],
+            y=df['aggregated_sell_volume_usd'],
+            name='Sell Volume',
+            line=dict(color='red')
+        ))
+        
+        # Update layout
+        fig.update_layout(
+            title=f"{asset} Buy/Sell Volume (Binance Futures)",
+            xaxis_title=None,
+            yaxis_title="Volume (USD)",
+            hovermode="x unified",
+            height=500
+        )
+        
+        display_chart(apply_chart_theme(fig))
+        
+        # Create ratio chart
+        st.subheader(f"{asset} Buy/Sell Ratio")
+        
+        fig = px.line(
+            df,
+            x='datetime',
+            y='buy_sell_ratio',
+            title=f"{asset} Buy/Sell Ratio (Binance Futures)",
+            color_discrete_sequence=[ASSET_COLORS.get(asset, '#3366CC')]
+        )
+        
+        # Add reference line at 1 (equal buy and sell)
+        fig.add_hline(
+            y=1,
+            line_dash="dash",
+            line_color="gray",
+            annotation_text="Equal"
+        )
+        
+        fig.update_layout(
+            xaxis_title=None,
+            yaxis_title="Buy/Sell Ratio",
+            height=500
+        )
+        
+        display_chart(apply_chart_theme(fig))
+        
+        # Create net flow chart (buy - sell)
+        st.subheader(f"{asset} Net Volume Flow")
+        
+        # Calculate net flow
+        df['net_flow'] = df['aggregated_buy_volume_usd'] - df['aggregated_sell_volume_usd']
+        
+        fig = px.bar(
+            df,
+            x='datetime',
+            y='net_flow',
+            title=f"{asset} Net Volume Flow (Buy - Sell Volume) - Binance Futures",
+            color='net_flow',
+            color_continuous_scale=['red', 'green'],
+            color_continuous_midpoint=0
+        )
+        
+        # Update layout
+        fig.update_layout(
+            xaxis_title=None,
+            yaxis_title="Net Flow (USD)",
+            coloraxis_showscale=False,
+            height=500
+        )
+        
+        # Add reference line at 0
+        fig.add_hline(
+            y=0,
+            line_dash="dash",
+            line_color="gray"
+        )
+        
+        display_chart(apply_chart_theme(fig))
+        
+    except Exception as e:
+        logger.error(f"Error processing taker buy/sell data for {asset}: {e}")
+        st.error(f"Error processing data: {e}")
+        st.info(f"There was an error loading the {asset} buy/sell volume data.")
+
 def main():
     """Main function to render the futures page."""
 
@@ -2049,7 +2499,7 @@ def main():
     render_sidebar()
 
     # Page title
-    st.title("Cryptocurrency Futures Markets")
+    st.title("Futures")
 
     try:
         # Get available assets for futures category
@@ -2092,7 +2542,8 @@ def main():
             "Liquidation",
             "Open Interest",
             "Order Book",
-            "Market Data"
+            "Market Data",
+            "Long/Short Ratio"
         ]
 
         # Create tabs for each category
@@ -2174,6 +2625,19 @@ def main():
                 logger.error(f"Error rendering market_data tab: {e}")
                 st.error(f"Error displaying market data")
                 st.info("There was an error processing the market data. This could be due to an unexpected data format or missing data.")
+                
+        with tabs[5]:  # Long/Short Ratio
+            try:
+                subcategory = 'long_short_ratio'
+                st.session_state.futures_subcategory = subcategory
+                # Use page-specific exchange selection if available, otherwise use general selection
+                selected_ls_exchanges = st.session_state.get('selected_long_short_ratio_exchanges', 
+                                                 st.session_state.get('selected_exchanges', ["All"]))
+                render_long_short_ratio_page(asset, selected_assets, selected_ls_exchanges)
+            except Exception as e:
+                logger.error(f"Error rendering long_short_ratio tab: {e}")
+                st.error(f"Error displaying long/short ratio data")
+                st.info("There was an error processing the long/short ratio data. This could be due to an unexpected data format or missing data.")
 
     except Exception as e:
         # If there's a critical error, log it and show a generic error message

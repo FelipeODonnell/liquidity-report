@@ -128,7 +128,7 @@ def create_treemap_chart(df, values_col, names_col, parent_col=None, title=None,
 
 def create_enhanced_pie_chart(df, values_col, names_col, title, color_map=None, **kwargs):
     """
-    Create a properly formatted pie chart with correct data handling and no text overlaps.
+    Create a properly formatted bar chart (replacing pie chart) with correct data handling and no text overlaps.
     
     Parameters:
     -----------
@@ -195,9 +195,11 @@ def create_enhanced_pie_chart(df, values_col, names_col, title, color_map=None, 
             'show_top_n': 8,  # Show top 8 items by default
             'min_percent': 2.0,  # Group items with less than 2% share by default
             'height': 400,
-            'pull_out_top': True,  # Pull out largest slice for emphasis
+            'pull_out_top': False,  # Do not pull out largest slice
             'display_percentages': True,
-            'display_labels': True
+            'display_labels': True,
+            'show_outside_labels': num_items > 5,  # Use outside labels for more than 5 items
+            'use_short_labels': num_items > 7  # Use short labels for more than 7 items
         }
         
         # Update params with any provided kwargs
@@ -262,10 +264,10 @@ def create_enhanced_pie_chart(df, values_col, names_col, title, color_map=None, 
 
 def create_simple_fallback_pie(df, values_col, names_col, title, color_map=None, height=400):
     """
-    Create a very simple pie chart without any advanced options as a fallback.
+    Create a very simple bar chart (replacing pie chart) as a fallback.
     
-    This bare-bones implementation avoids problematic features like connectors
-    that might cause errors in more complex implementations.
+    This bare-bones implementation provides a simple horizontal bar visualization
+    that displays the same data that would have been in a pie chart.
     
     Parameters:
     -----------
@@ -285,7 +287,7 @@ def create_simple_fallback_pie(df, values_col, names_col, title, color_map=None,
     Returns:
     --------
     plotly.graph_objects.Figure
-        A simple pie chart or error figure
+        A simple bar chart or error figure
     """
     # Create a copy of the dataframe to work with
     df_copy = df.copy()
@@ -294,11 +296,14 @@ def create_simple_fallback_pie(df, values_col, names_col, title, color_map=None,
     df_copy[values_col] = pd.to_numeric(df_copy[values_col], errors='coerce')
     df_copy = df_copy[df_copy[values_col] > 0].dropna(subset=[values_col])
     
+    # Remove 'All' category if present
+    df_copy = df_copy[~df_copy[names_col].isin(['All', 'all', 'ALL'])]
+    
     # If no valid data left, return empty chart
     if df_copy.empty:
         fig = go.Figure()
         fig.add_annotation(
-            text="No valid data for pie chart",
+            text="No valid data for chart",
             xref="paper",
             yref="paper",
             x=0.5,
@@ -308,19 +313,47 @@ def create_simple_fallback_pie(df, values_col, names_col, title, color_map=None,
         fig.update_layout(title=title, height=height)
         return fig
     
-    # Create a simple pie chart with minimal options
-    fig = go.Figure(data=[go.Pie(
-        labels=df_copy[names_col],
-        values=df_copy[values_col],
-        textinfo='label+percent',
-        hoverinfo='label+percent+value',
-        textposition='inside'
+    # Calculate percentages
+    total = df_copy[values_col].sum()
+    df_copy['percent'] = df_copy[values_col] / total * 100
+    df_copy['text'] = df_copy['percent'].apply(lambda x: f'{x:.1f}%')
+    
+    # Sort by value for better visualization (ascending for horizontal bars - largest at top)
+    df_copy = df_copy.sort_values(by=values_col, ascending=True)
+    
+    # Create a horizontal bar chart as replacement for pie chart
+    fig = go.Figure(data=[go.Bar(
+        y=df_copy[names_col],
+        x=df_copy[values_col],
+        orientation='h',
+        text=df_copy['text'],
+        textposition='auto',
+        textfont=dict(size=12, color='white'),
+        hovertemplate='%{y}<br>Value: %{x:,.0f}<br>Percentage: %{text}<extra></extra>',
+        marker=dict(
+            line=dict(color='white', width=1),
+            color=[color_map.get(name, None) for name in df_copy[names_col]] if color_map else None
+        )
     )])
     
-    # Very minimal layout
+    # Improved layout for bar chart
     fig.update_layout(
-        title=title,
-        height=height
+        title={
+            'text': title,
+            'y': 0.95,  # Position title higher
+            'font': {'color': 'white'}
+        },
+        height=height,
+        margin=dict(t=70, b=50, l=120, r=40),  # Increase left margin for category labels
+        yaxis=dict(
+            title=None,
+            automargin=True  # Auto-adjust margin to fit labels
+        ),
+        xaxis=dict(
+            title='Value',
+            showgrid=True,
+            gridcolor='rgba(255, 255, 255, 0.1)'
+        )
     )
     
     return fig

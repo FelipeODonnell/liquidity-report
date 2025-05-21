@@ -4,20 +4,61 @@ Report page for the Izun Crypto Liquidity Report.
 This page serves as the main dashboard/overview page focused on liquidity metrics and intraday changes.
 It provides a comprehensive view of market conditions across different assets, with emphasis on
 liquidity indicators such as open interest, trading volumes, and market depth.
+
+This report should include:
+1. Table of 4 main crypto (ETH, BTC, XRP, SOL) and their changes in the spot and futures market (daily, weekly, monthly change)
+   - Data files: 
+     - Spot price data: data/[LATEST_DATE]/spot/spot_market/api_spot_price_history_[ASSET].parquet
+     - Futures price data: data/[LATEST_DATE]/futures/market/api_futures_pairs_markets_[ASSET].parquet,
+       data/[LATEST_DATE]/futures/market/api_price_ohlc_history.parquet
+   - Structure: The spot price files contain columns like 'timestamp', 'price', 'change_24h', etc.
+     The futures price files contain exchange-specific data with columns like 'price', 'volume_24h', etc.
+   - Implementation: Create a table showing each asset with columns for current price, 24h change,
+     7d change, 30d change for both spot and futures markets. Default timeframe is intraday (24h).
+     Use the tables.py create_crypto_table() or create_formatted_table() component.
+
+2. Chart of the spot crypto market (default is daily change, with the option to show weekly and month change)
+   - Data files: data/[LATEST_DATE]/spot/spot_market/api_spot_price_history_[ASSET].parquet
+   - Structure: Contains timestamp/datetime and price data for each asset over time
+   - Implementation: Create a line chart showing price movements for all 4 main assets (BTC, ETH, XRP, SOL)
+     using the charts.py create_time_series() component with a default timeframe of 24h (intraday),
+     with options to switch to weekly or monthly views. Will use 'datetime' as x_col and 'price' as y_col.
+
+3. Chart of the funding rate values for different exchanges (default is daily change, with the option to show weekly and month change)
+   - Data files: 
+     - Per exchange: data/[LATEST_DATE]/futures/funding_rate/api_futures_fundingRate_ohlc_history_[ASSET]_[EXCHANGE].parquet
+     - Aggregated: data/[LATEST_DATE]/futures/funding_rate/api_futures_fundingRate_oi_weight_ohlc_history_[ASSET].parquet, 
+       data/[LATEST_DATE]/futures/funding_rate/api_futures_fundingRate_vol_weight_ohlc_history_[ASSET].parquet
+   - Structure: Contains timestamp, funding rate data for each exchange or aggregated by weighting method
+   - Implementation: Create a multi-line chart showing funding rates across major exchanges for a selected asset
+     (default BTC) with a default timeframe of 24h (intraday), using charts.py create_time_series().
+     Will have options to switch between assets and timeframes.
+
+4. Chart of the open interest changes for different exchanges (default is daily change, with the option to show weekly and month change)
+   - Data files:
+     - Exchange-specific: data/[LATEST_DATE]/futures/open_interest/api_futures_openInterest_exchange_list_[ASSET].parquet,
+       data/[LATEST_DATE]/futures/open_interest/api_futures_openInterest_exchange_history_chart_[ASSET].parquet
+     - Aggregated data: data/[LATEST_DATE]/futures/open_interest/api_futures_openInterest_ohlc_aggregated_history_[ASSET].parquet
+   - Structure: Contains timestamp, open interest values in USD and coin units across various exchanges
+   - Implementation: Create a stacked area chart or multi-line chart showing open interest across major exchanges
+     for a selected asset (default BTC) with a default timeframe of 24h (intraday). Will use
+     charts.py create_area_chart() or create_time_series() with options to switch between assets and timeframes.
+
+All charts will have a default intraday view (24h) with the ability to toggle to see weekly (7d) and monthly (30d)
+timeframes. The implementation will use a single tab containing all 4 elements arranged in a logical flow from
+summary table at the top to detailed charts below.
 """
 
 import streamlit as st
 import pandas as pd
 import plotly.express as px
 import plotly.graph_objects as go
-from plotly.subplots import make_subplots
 from datetime import datetime, timedelta
 import os
 import sys
 import logging
-import numpy as np
 
-# Set up logging
+# Configure logging
 logger = logging.getLogger(__name__)
 
 # Add parent directory to path to import from components and utils
@@ -25,26 +66,24 @@ sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
 # Import components and utilities
 from components.sidebar import render_sidebar
-from utils.config import DATA_BASE_PATH, SUPPORTED_ASSETS, ASSET_COLORS, CHART_COLORS, EXCHANGE_COLORS
 from components.metrics import display_metrics_row, display_metric_card
 from components.charts import (
     create_time_series, 
+    create_ohlc_chart, 
     create_bar_chart, 
     create_time_series_with_bar,
-    create_pie_chart,
-    create_ohlc_chart,
+    create_area_chart,
     apply_chart_theme,
-    display_chart,
-    display_filterable_chart
+    display_chart
 )
-from components.tables import create_formatted_table, create_exchange_table
+from components.tables import create_formatted_table, create_crypto_table
 from utils.data_loader import (
     get_latest_data_directory, 
     load_data_for_category, 
     process_timestamps,
-    get_available_assets_for_category,
+    get_data_last_updated,
     calculate_metrics,
-    get_historical_comparison
+    load_specific_data_file
 )
 from utils.formatters import (
     format_currency, 
@@ -53,972 +92,540 @@ from utils.formatters import (
     format_timestamp,
     humanize_time_diff
 )
-from utils.chart_utils import create_enhanced_pie_chart, create_treemap_chart
+from utils.config import APP_TITLE, APP_ICON, SUPPORTED_ASSETS
 
 # Set page config with title and icon
 st.set_page_config(
-    page_title="Izun Crypto Liquidity Report - Dashboard",
-    page_icon="📊",
+    page_title=f"{APP_TITLE} - Report",
+    page_icon=APP_ICON,
     layout="wide",
     initial_sidebar_state="expanded"
 )
 
-# Store the current page in session state for sidebar navigation
+# Set the current page for sidebar navigation
 st.session_state.current_page = 'report'
 
-# Set logging level
-logger.setLevel(logging.INFO)
-
-def load_intraday_metrics():
+def load_report_data():
     """
-    Load and compute key intraday metrics across supported assets.
+    Load data for the report page.
     
     Returns:
     --------
     dict
-        Dictionary containing intraday metrics for each asset
+        Dictionary containing data for the report
     """
-    metrics = {}
+    data = {}
     
     # Get the latest data directory
-    data_dir = get_latest_data_directory()
-    if not data_dir:
-        logger.error("No data directories found.")
-        return metrics
+    latest_dir = get_latest_data_directory()
     
-    # Loop through supported assets
-    for asset in SUPPORTED_ASSETS:
-        asset_metrics = {}
-        
-        try:
-            # Load futures data for the asset
-            futures_oi = load_data_for_category('futures', 'open_interest', asset, data_dir)
-            futures_liquidation = load_data_for_category('futures', 'liquidation', asset, data_dir)
-            futures_taker = load_data_for_category('futures', 'taker_buy_sell', asset, data_dir)
-            futures_funding = load_data_for_category('futures', 'funding_rate', asset, data_dir)
-            
-            # Load spot data for the asset
-            spot_market = load_data_for_category('spot', 'spot_market', asset, data_dir)
-            spot_taker = load_data_for_category('spot', 'taker_buy_sell_spot', asset, data_dir)
-            
-            # Process open interest data
-            if futures_oi:
-                # Try to get exchange list data
-                oi_key = f"api_futures_openInterest_exchange_list_{asset}"
-                if oi_key in futures_oi:
-                    oi_df = futures_oi[oi_key]
-                    
-                    # Find the "All" exchange row if it exists
-                    if 'exchange_name' in oi_df.columns:
-                        all_row = oi_df[oi_df['exchange_name'] == 'All']
-                        if not all_row.empty:
-                            # Get total OI value
-                            if 'open_interest_usd' in all_row.columns:
-                                asset_metrics['total_oi'] = all_row['open_interest_usd'].iloc[0]
-                            
-                            # Get OI change metrics
-                            for period in ['1h', '4h', '24h', '7d', '14d', '30d']:
-                                change_col = f'change_{period}_percent'
-                                if change_col in all_row.columns:
-                                    asset_metrics[f'oi_change_{period}'] = all_row[change_col].iloc[0]
-                    
-                # Try to get time series OI data for 24h high/low
-                oi_history_key = f"api_futures_openInterest_ohlc_aggregated_history_{asset}"
-                if oi_history_key in futures_oi:
-                    oi_history = futures_oi[oi_history_key]
-                    oi_history = process_timestamps(oi_history)
-                    
-                    # Filter to last 24 hours
-                    if 'datetime' in oi_history.columns:
-                        last_24h = datetime.now() - timedelta(days=1)
-                        oi_24h = oi_history[oi_history['datetime'] >= last_24h]
-                        
-                        if not oi_24h.empty and 'high' in oi_24h.columns and 'low' in oi_24h.columns:
-                            asset_metrics['oi_24h_high'] = oi_24h['high'].max()
-                            asset_metrics['oi_24h_low'] = oi_24h['low'].min()
-            
-            # Process liquidation data
-            if futures_liquidation:
-                # Try to get aggregated liquidation history
-                liq_key = f"api_futures_liquidation_aggregated_coin_history_{asset}"
-                if liq_key in futures_liquidation:
-                    liq_df = futures_liquidation[liq_key]
-                    liq_df = process_timestamps(liq_df)
-                    
-                    # Filter to last 24 hours
-                    if 'datetime' in liq_df.columns:
-                        last_24h = datetime.now() - timedelta(days=1)
-                        liq_24h = liq_df[liq_df['datetime'] >= last_24h]
-                        
-                        # Get long and short liquidations
-                        if not liq_24h.empty:
-                            if 'long_liquidation_usd' in liq_24h.columns:
-                                asset_metrics['long_liquidation_24h'] = liq_24h['long_liquidation_usd'].sum()
-                            if 'short_liquidation_usd' in liq_24h.columns:
-                                asset_metrics['short_liquidation_24h'] = liq_24h['short_liquidation_usd'].sum()
-            
-            # Process taker buy/sell data
-            if futures_taker:
-                # Try to get aggregated taker data
-                taker_key = f"api_futures_taker_buy_sell_volume_history_{asset}"
-                if taker_key in futures_taker:
-                    taker_df = futures_taker[taker_key]
-                    taker_df = process_timestamps(taker_df)
-                    
-                    # Filter to last 24 hours
-                    if 'datetime' in taker_df.columns:
-                        last_24h = datetime.now() - timedelta(days=1)
-                        taker_24h = taker_df[taker_df['datetime'] >= last_24h]
-                        
-                        # Get buy and sell volumes
-                        if not taker_24h.empty:
-                            # Check for various column name patterns
-                            buy_cols = ['buy_volume', 'buy_vol', 'taker_buy_volume']
-                            sell_cols = ['sell_volume', 'sell_vol', 'taker_sell_volume']
-                            
-                            # Find the first matching column
-                            buy_col = next((col for col in buy_cols if col in taker_24h.columns), None)
-                            sell_col = next((col for col in sell_cols if col in taker_24h.columns), None)
-                            
-                            if buy_col and sell_col:
-                                asset_metrics['taker_buy_volume_24h'] = taker_24h[buy_col].sum()
-                                asset_metrics['taker_sell_volume_24h'] = taker_24h[sell_col].sum()
-                                
-                                # Calculate ratio
-                                if asset_metrics['taker_sell_volume_24h'] > 0:
-                                    asset_metrics['taker_buy_sell_ratio_24h'] = (
-                                        asset_metrics['taker_buy_volume_24h'] / 
-                                        asset_metrics['taker_sell_volume_24h']
-                                    )
-            
-            # Process funding rate data
-            if futures_funding:
-                # Try to get aggregated funding rate data
-                funding_key = "api_futures_fundingRate_ohlc_history"
-                if funding_key in futures_funding:
-                    funding_df = futures_funding[funding_key]
-                    funding_df = process_timestamps(funding_df)
-                    
-                    # Filter to last 24 hours
-                    if 'datetime' in funding_df.columns:
-                        last_24h = datetime.now() - timedelta(days=1)
-                        funding_24h = funding_df[funding_df['datetime'] >= last_24h]
-                        
-                        # Get average funding rate
-                        if not funding_24h.empty and 'close' in funding_24h.columns:
-                            asset_metrics['avg_funding_rate_24h'] = funding_24h['close'].mean()
-            
-            # Process spot market data to get price and volume
-            if spot_market:
-                # Look for price data
-                price_keys = [
-                    f"api_spot_pairs_markets_{asset}",
-                    f"api_spot_price_history_{asset}"
-                ]
-                
-                for key in price_keys:
-                    if key in spot_market and not spot_market[key].empty:
-                        price_df = spot_market[key]
-                        
-                        # Check for price column
-                        price_cols = ['price_usd', 'price', 'close', 'last']
-                        price_col = next((col for col in price_cols if col in price_df.columns), None)
-                        
-                        if price_col:
-                            # Get current price (assuming the first row is the most recent)
-                            asset_metrics['current_price'] = price_df[price_col].iloc[0]
-                            
-                            # Get price change if available
-                            change_cols = ['price_change_percentage_24h', 'change_24h', 'change_percentage_24h']
-                            change_col = next((col for col in change_cols if col in price_df.columns), None)
-                            
-                            if change_col:
-                                asset_metrics['price_change_24h'] = price_df[change_col].iloc[0]
-                        
-                        # Get volume data if available
-                        volume_cols = ['volume_24h_usd', 'volume_usd', 'volume']
-                        volume_col = next((col for col in volume_cols if col in price_df.columns), None)
-                        
-                        if volume_col:
-                            asset_metrics['spot_volume_24h'] = price_df[volume_col].iloc[0]
-                        
-                        break
-            
-            metrics[asset] = asset_metrics
-            
-        except Exception as e:
-            logger.error(f"Error loading intraday metrics for {asset}: {e}")
-            # Continue with next asset
-            continue
+    if not latest_dir:
+        st.error("No data directories found. Please check your data path.")
+        return data
     
-    return metrics
+    # Load spot market data for BTC, ETH, SOL, XRP
+    spot_data = {}
+    for asset in SUPPORTED_ASSETS[:4]:  # BTC, ETH, SOL, XRP
+        spot_asset_data = load_data_for_category('spot', 'spot_market', asset, latest_dir)
+        if spot_asset_data:
+            spot_data[asset] = spot_asset_data
+    
+    data['spot'] = spot_data
+    
+    # Load futures market data
+    futures_data = {}
+    for asset in SUPPORTED_ASSETS[:4]:  # BTC, ETH, SOL, XRP
+        futures_asset_data = load_data_for_category('futures', 'market', asset, latest_dir)
+        if futures_asset_data:
+            futures_data[asset] = futures_asset_data
+    
+    data['futures'] = futures_data
+    
+    # Load funding rate data
+    funding_rate_data = {}
+    for asset in SUPPORTED_ASSETS[:4]:  # BTC, ETH, SOL, XRP
+        funding_asset_data = load_data_for_category('futures', 'funding_rate', asset, latest_dir)
+        if funding_asset_data:
+            funding_rate_data[asset] = funding_asset_data
+    
+    data['funding_rate'] = funding_rate_data
+    
+    # Load open interest data
+    open_interest_data = {}
+    for asset in SUPPORTED_ASSETS[:4]:  # BTC, ETH, SOL, XRP
+        oi_asset_data = load_data_for_category('futures', 'open_interest', asset, latest_dir)
+        if oi_asset_data:
+            open_interest_data[asset] = oi_asset_data
+    
+    data['open_interest'] = open_interest_data
+    
+    return data
 
-def create_key_metrics_table(metrics):
+def prepare_price_comparison_dataframe(data):
     """
-    Create a formatted table with key metrics for all assets.
+    Prepare a comparison dataframe for the price table showing spot and futures data
     
     Parameters:
     -----------
-    metrics : dict
-        Dictionary containing metrics for each asset
+    data : dict
+        The loaded data dictionary
     
     Returns:
     --------
     pandas.DataFrame
-        Formatted metrics table
+        DataFrame with price comparison data for BTC, ETH, SOL, XRP
     """
-    table_data = []
+    comparison_data = []
     
-    # Define the metrics to include in the table
-    display_metrics = [
-        {'key': 'current_price', 'name': 'Price (USD)', 'format': lambda x: format_currency(x, precision=2)},
-        {'key': 'price_change_24h', 'name': 'Price Change (24h)', 'format': lambda x: format_percentage(x, show_plus=True)},
-        {'key': 'total_oi', 'name': 'Open Interest', 'format': lambda x: format_currency(x, abbreviate=True)},
-        {'key': 'oi_change_24h', 'name': 'OI Change (24h)', 'format': lambda x: format_percentage(x, show_plus=True)},
-        {'key': 'taker_buy_sell_ratio_24h', 'name': 'Buy/Sell Ratio', 'format': lambda x: f"{x:.2f}"},
-        {'key': 'avg_funding_rate_24h', 'name': 'Funding Rate (avg)', 'format': lambda x: format_percentage(x, show_plus=True)},
-        {'key': 'long_liquidation_24h', 'name': 'Long Liquidations', 'format': lambda x: format_currency(x, abbreviate=True)},
-        {'key': 'short_liquidation_24h', 'name': 'Short Liquidations', 'format': lambda x: format_currency(x, abbreviate=True)}
-    ]
+    # Filter to the 4 supported assets
+    assets = SUPPORTED_ASSETS[:4]  # BTC, ETH, SOL, XRP
     
-    # Create rows for each asset
-    for asset in SUPPORTED_ASSETS:
-        if asset in metrics:
-            row = {'Asset': asset}
-            
-            # Add metrics to row
-            for metric in display_metrics:
-                key = metric['key']
-                if key in metrics[asset]:
-                    # Format the value
-                    value = metrics[asset][key]
-                    row[metric['name']] = value
-                else:
-                    row[metric['name']] = None
-            
-            table_data.append(row)
+    for asset in assets:
+        asset_data = {
+            'Asset': asset
+        }
+        
+        # Get spot price data
+        if 'spot' in data and asset in data['spot']:
+            try:
+                spot_price_history_key = f'api_spot_price_history_{asset}'
+                if spot_price_history_key in data['spot'][asset]:
+                    spot_df = data['spot'][asset][spot_price_history_key]
+                    spot_df = process_timestamps(spot_df)
+                    
+                    if not spot_df.empty and 'close' in spot_df.columns:
+                        spot_df = spot_df.sort_values('datetime')
+                        asset_data['Spot Price'] = spot_df['close'].iloc[-1]
+                        
+                        # Calculate changes over different periods
+                        now = spot_df['datetime'].max()
+                        
+                        # 24h change
+                        day_ago = now - timedelta(days=1)
+                        day_df = spot_df[spot_df['datetime'] >= day_ago]
+                        if not day_df.empty:
+                            first_price = day_df['close'].iloc[0]
+                            last_price = day_df['close'].iloc[-1]
+                            asset_data['Spot 24h Change'] = (last_price - first_price) / first_price * 100
+                        
+                        # 7d change
+                        week_ago = now - timedelta(days=7)
+                        week_df = spot_df[spot_df['datetime'] >= week_ago]
+                        if not week_df.empty:
+                            first_price = week_df['close'].iloc[0]
+                            last_price = week_df['close'].iloc[-1]
+                            asset_data['Spot 7d Change'] = (last_price - first_price) / first_price * 100
+                        
+                        # 30d change
+                        month_ago = now - timedelta(days=30)
+                        month_df = spot_df[spot_df['datetime'] >= month_ago]
+                        if not month_df.empty:
+                            first_price = month_df['close'].iloc[0]
+                            last_price = month_df['close'].iloc[-1]
+                            asset_data['Spot 30d Change'] = (last_price - first_price) / first_price * 100
+            except Exception as e:
+                logger.error(f"Error processing spot data for {asset}: {e}")
+        
+        # Get futures price data
+        if 'futures' in data and asset in data['futures']:
+            try:
+                futures_markets_key = f'api_futures_pairs_markets_{asset}'
+                if futures_markets_key in data['futures'][asset]:
+                    futures_df = data['futures'][asset][futures_markets_key]
+                    
+                    if not futures_df.empty and 'current_price' in futures_df.columns:
+                        # Use the average price across all exchanges
+                        asset_data['Futures Price'] = futures_df['current_price'].mean()
+                        
+                        # Use the average price change across all exchanges
+                        if 'price_change_percent_24h' in futures_df.columns:
+                            asset_data['Futures 24h Change'] = futures_df['price_change_percent_24h'].mean()
+                
+                # For 7d and 30d changes, we need OHLC data from price_ohlc_history
+                price_ohlc_key = 'api_price_ohlc_history'
+                if price_ohlc_key in data['futures'][asset]:
+                    ohlc_df = data['futures'][asset][price_ohlc_key]
+                    ohlc_df = process_timestamps(ohlc_df)
+                    
+                    if not ohlc_df.empty and 'close' in ohlc_df.columns:
+                        ohlc_df = ohlc_df.sort_values('datetime')
+                        
+                        now = ohlc_df['datetime'].max()
+                        
+                        # 7d change
+                        week_ago = now - timedelta(days=7)
+                        week_df = ohlc_df[ohlc_df['datetime'] >= week_ago]
+                        if not week_df.empty:
+                            first_price = week_df['close'].iloc[0]
+                            last_price = week_df['close'].iloc[-1]
+                            asset_data['Futures 7d Change'] = (last_price - first_price) / first_price * 100
+                        
+                        # 30d change
+                        month_ago = now - timedelta(days=30)
+                        month_df = ohlc_df[ohlc_df['datetime'] >= month_ago]
+                        if not month_df.empty:
+                            first_price = month_df['close'].iloc[0]
+                            last_price = month_df['close'].iloc[-1]
+                            asset_data['Futures 30d Change'] = (last_price - first_price) / first_price * 100
+            except Exception as e:
+                logger.error(f"Error processing futures data for {asset}: {e}")
+        
+        comparison_data.append(asset_data)
     
-    # Create DataFrame
-    if table_data:
-        df = pd.DataFrame(table_data)
-        return df
-    else:
-        return pd.DataFrame(columns=['Asset'] + [m['name'] for m in display_metrics])
+    return pd.DataFrame(comparison_data)
 
-def calculate_market_health_score(metrics, asset):
+def prepare_spot_price_chart_data(data, timeframe='24h'):
     """
-    Calculate a market health score for the given asset based on various metrics.
+    Prepare data for the spot price chart
     
     Parameters:
     -----------
-    metrics : dict
-        Dictionary containing metrics for all assets
-    asset : str
-        Asset symbol to calculate score for
+    data : dict
+        The loaded data dictionary
+    timeframe : str
+        Timeframe to display (24h, 7d, 30d)
     
     Returns:
     --------
-    float
-        Market health score (0-100)
     dict
-        Component scores and contributing factors
+        Dictionary with chart data for each asset
     """
-    if asset not in metrics:
-        return 50, {'overall': 50}  # Default neutral score
+    chart_data = {}
     
-    asset_metrics = metrics[asset]
-    component_scores = {}
+    # Filter to the 4 supported assets
+    assets = SUPPORTED_ASSETS[:4]  # BTC, ETH, SOL, XRP
     
-    # 1. Price momentum (20% weight)
-    price_score = 50  # Neutral default
-    if 'price_change_24h' in asset_metrics:
-        price_change = asset_metrics['price_change_24h']
-        # Map price change to 0-100 score
-        # Positive price change → higher score
-        if price_change > 10:
-            price_score = 100
-        elif price_change > 5:
-            price_score = 90
-        elif price_change > 2:
-            price_score = 80
-        elif price_change > 0:
-            price_score = 65
-        elif price_change > -2:
-            price_score = 45
-        elif price_change > -5:
-            price_score = 30
-        elif price_change > -10:
-            price_score = 20
-        else:
-            price_score = 10
-    component_scores['price_momentum'] = price_score
+    for asset in assets:
+        if 'spot' in data and asset in data['spot']:
+            try:
+                spot_price_history_key = f'api_spot_price_history_{asset}'
+                if spot_price_history_key in data['spot'][asset]:
+                    df = data['spot'][asset][spot_price_history_key]
+                    df = process_timestamps(df)
+                    
+                    if not df.empty and 'close' in df.columns and 'datetime' in df.columns:
+                        df = df.sort_values('datetime')
+                        
+                        # Filter based on timeframe
+                        now = df['datetime'].max()
+                        
+                        if timeframe == '24h':
+                            cutoff = now - timedelta(days=1)
+                        elif timeframe == '7d':
+                            cutoff = now - timedelta(days=7)
+                        elif timeframe == '30d':
+                            cutoff = now - timedelta(days=30)
+                        else:
+                            cutoff = now - timedelta(days=1)  # Default to 24h
+                        
+                        df = df[df['datetime'] >= cutoff]
+                        
+                        # Normalize price to compare different assets on same scale
+                        first_price = df['close'].iloc[0]
+                        df['normalized_price'] = df['close'] / first_price * 100
+                        
+                        chart_data[asset] = df
+            except Exception as e:
+                logger.error(f"Error preparing spot price chart data for {asset}: {e}")
     
-    # 2. Open Interest health (20% weight)
-    oi_score = 50  # Neutral default
-    if 'oi_change_24h' in asset_metrics:
-        oi_change = asset_metrics['oi_change_24h']
-        # Map OI change to 0-100 score
-        # Moderate OI growth is healthy, extreme growth may indicate a bubble
-        if 1 < oi_change <= 5:
-            oi_score = 90  # Healthy growth
-        elif 0 < oi_change <= 1:
-            oi_score = 70  # Slight growth
-        elif -1 <= oi_change <= 0:
-            oi_score = 50  # Slight decline
-        elif -5 <= oi_change < -1:
-            oi_score = 30  # Moderate decline
-        elif oi_change > 10:
-            oi_score = 40  # Too rapid growth - might indicate excessive leverage
-        elif oi_change < -5:
-            oi_score = 20  # Sharp decline - might indicate market exit
-        else:
-            oi_score = 60  # Other scenarios
-    component_scores['open_interest'] = oi_score
-    
-    # 3. Buy/Sell balance (20% weight)
-    buysell_score = 50  # Neutral default
-    if 'taker_buy_sell_ratio_24h' in asset_metrics:
-        ratio = asset_metrics['taker_buy_sell_ratio_24h']
-        # Map buy/sell ratio to 0-100 score
-        # Ratio around 1.0 is balanced, higher ratio indicates more buying pressure
-        if 0.95 <= ratio <= 1.05:
-            buysell_score = 50  # Balanced market
-        elif 1.05 < ratio <= 1.2:
-            buysell_score = 70  # Moderate buying pressure
-        elif 1.2 < ratio <= 1.5:
-            buysell_score = 85  # Strong buying pressure
-        elif ratio > 1.5:
-            buysell_score = 95  # Very strong buying pressure
-        elif 0.8 <= ratio < 0.95:
-            buysell_score = 40  # Moderate selling pressure
-        elif 0.5 <= ratio < 0.8:
-            buysell_score = 25  # Strong selling pressure
-        elif ratio < 0.5:
-            buysell_score = 10  # Very strong selling pressure
-    component_scores['buy_sell_balance'] = buysell_score
-    
-    # 4. Funding rate health (20% weight)
-    funding_score = 50  # Neutral default
-    if 'avg_funding_rate_24h' in asset_metrics:
-        funding_rate = asset_metrics['avg_funding_rate_24h']
-        # Map funding rate to 0-100 score
-        # Moderate positive funding is healthy, extreme values indicate imbalance
-        if -0.01 <= funding_rate <= 0.01:
-            funding_score = 70  # Balanced funding
-        elif 0.01 < funding_rate <= 0.03:
-            funding_score = 60  # Slightly positive
-        elif 0.03 < funding_rate <= 0.1:
-            funding_score = 40  # Moderately high funding
-        elif funding_rate > 0.1:
-            funding_score = 20  # Very high funding - potential reversal signal
-        elif -0.03 <= funding_rate < -0.01:
-            funding_score = 60  # Slightly negative
-        elif -0.1 <= funding_rate < -0.03:
-            funding_score = 40  # Moderately negative funding
-        elif funding_rate < -0.1:
-            funding_score = 20  # Very negative funding - potential reversal signal
-    component_scores['funding_rate'] = funding_score
-    
-    # 5. Liquidation risk (20% weight)
-    liquidation_score = 50  # Neutral default
-    if 'long_liquidation_24h' in asset_metrics and 'short_liquidation_24h' in asset_metrics:
-        long_liq = asset_metrics['long_liquidation_24h']
-        short_liq = asset_metrics['short_liquidation_24h']
-        total_liq = long_liq + short_liq
-        
-        # Try to get OI for relative comparison
-        oi = asset_metrics.get('total_oi', 0)
-        
-        # Calculate liquidation as percentage of OI
-        liq_percent = (total_liq / oi * 100) if oi > 0 else 0
-        
-        # Map liquidation percentage to score
-        if liq_percent < 1:
-            liquidation_score = 90  # Very low liquidations
-        elif 1 <= liq_percent < 3:
-            liquidation_score = 70  # Low liquidations
-        elif 3 <= liq_percent < 5:
-            liquidation_score = 50  # Moderate liquidations
-        elif 5 <= liq_percent < 10:
-            liquidation_score = 30  # High liquidations
-        elif liq_percent >= 10:
-            liquidation_score = 10  # Very high liquidations
-    component_scores['liquidation_risk'] = liquidation_score
-    
-    # Calculate weighted average for overall score
-    weights = {
-        'price_momentum': 0.2,
-        'open_interest': 0.2,
-        'buy_sell_balance': 0.2,
-        'funding_rate': 0.2,
-        'liquidation_risk': 0.2
-    }
-    
-    overall_score = sum(score * weights[component] for component, score in component_scores.items())
-    component_scores['overall'] = overall_score
-    
-    return overall_score, component_scores
+    return chart_data
 
-def format_health_score(score):
+def prepare_funding_rate_chart_data(data, asset='BTC', timeframe='24h'):
     """
-    Format health score with color and description.
+    Prepare data for the funding rate chart
     
     Parameters:
     -----------
-    score : float
-        Health score (0-100)
+    data : dict
+        The loaded data dictionary
+    asset : str
+        Asset to display (BTC, ETH, SOL, XRP)
+    timeframe : str
+        Timeframe to display (24h, 7d, 30d)
     
     Returns:
     --------
-    str
-        Description of health
-    str
-        Color code for the score
+    pandas.DataFrame
+        DataFrame with funding rate data for the selected asset and timeframe
     """
-    if score >= 80:
-        return "Very Healthy", "#1c7c54"  # Green
-    elif score >= 65:
-        return "Healthy", "#4CAF50"  # Light green
-    elif score >= 45:
-        return "Neutral", "#FFC107"  # Yellow
-    elif score >= 30:
-        return "Weak", "#FF9800"  # Orange
-    else:
-        return "Unhealthy", "#F44336"  # Red
+    combined_df = pd.DataFrame()
+    
+    if 'funding_rate' in data and asset in data['funding_rate']:
+        # Get list of exchanges from the available data files
+        exchange_dfs = []
+        
+        for key in data['funding_rate'][asset].keys():
+            if f"api_futures_fundingRate_ohlc_history_{asset}_" in key:
+                exchange = key.replace(f"api_futures_fundingRate_ohlc_history_{asset}_", "")
+                try:
+                    df = data['funding_rate'][asset][key]
+                    df = process_timestamps(df)
+                    
+                    if not df.empty and 'close' in df.columns and 'datetime' in df.columns:
+                        # Convert string funding rates to float if needed
+                        if df['close'].dtype == 'object':
+                            df['funding_rate'] = df['close'].astype(float)
+                        else:
+                            df['funding_rate'] = df['close']
+                        
+                        # Add exchange column
+                        df['exchange'] = exchange
+                        
+                        # Keep only necessary columns
+                        df = df[['datetime', 'exchange', 'funding_rate']]
+                        
+                        exchange_dfs.append(df)
+                except Exception as e:
+                    logger.error(f"Error processing funding rate data for {asset} on {exchange}: {e}")
+        
+        # Combine all exchanges into one dataframe
+        if exchange_dfs:
+            combined_df = pd.concat(exchange_dfs, ignore_index=True)
+            
+            # Filter based on timeframe
+            if not combined_df.empty:
+                now = combined_df['datetime'].max()
+                
+                if timeframe == '24h':
+                    cutoff = now - timedelta(days=1)
+                elif timeframe == '7d':
+                    cutoff = now - timedelta(days=7)
+                elif timeframe == '30d':
+                    cutoff = now - timedelta(days=30)
+                else:
+                    cutoff = now - timedelta(days=1)  # Default to 24h
+                
+                combined_df = combined_df[combined_df['datetime'] >= cutoff]
+    
+    return combined_df
 
-def create_market_health_gauge(score, title="Market Health"):
+def prepare_open_interest_chart_data(data, asset='BTC', timeframe='24h'):
     """
-    Create a gauge chart for market health.
+    Prepare data for the open interest chart
     
     Parameters:
     -----------
-    score : float
-        Health score (0-100)
-    title : str
-        Chart title
+    data : dict
+        The loaded data dictionary
+    asset : str
+        Asset to display (BTC, ETH, SOL, XRP)
+    timeframe : str
+        Timeframe to display (24h, 7d, 30d)
+    
+    Returns:
+    --------
+    pandas.DataFrame
+        DataFrame with open interest data for the selected asset and timeframe
+    """
+    result_df = None
+    
+    if 'open_interest' in data and asset in data['open_interest']:
+        # Try to use aggregated history first
+        agg_key = f'api_futures_openInterest_ohlc_aggregated_history_{asset}'
+        if agg_key in data['open_interest'][asset]:
+            try:
+                df = data['open_interest'][asset][agg_key]
+                df = process_timestamps(df)
+                
+                if not df.empty and 'close' in df.columns and 'datetime' in df.columns:
+                    df = df.sort_values('datetime')
+                    
+                    # Filter based on timeframe
+                    now = df['datetime'].max()
+                    
+                    if timeframe == '24h':
+                        cutoff = now - timedelta(days=1)
+                    elif timeframe == '7d':
+                        cutoff = now - timedelta(days=7)
+                    elif timeframe == '30d':
+                        cutoff = now - timedelta(days=30)
+                    else:
+                        cutoff = now - timedelta(days=1)  # Default to 24h
+                    
+                    df = df[df['datetime'] >= cutoff]
+                    
+                    # Prepare for display
+                    df['open_interest'] = df['close']
+                    result_df = df
+            except Exception as e:
+                logger.error(f"Error processing aggregated open interest data for {asset}: {e}")
+        
+        # If we don't have aggregated data or it failed, try exchange-specific data
+        if result_df is None or result_df.empty:
+            exchange_chart_key = f'api_futures_openInterest_exchange_history_chart_{asset}'
+            if exchange_chart_key in data['open_interest'][asset]:
+                try:
+                    df = data['open_interest'][asset][exchange_chart_key]
+                    df = process_timestamps(df)
+                    
+                    if not df.empty and 'datetime' in df.columns:
+                        # This data is likely already in the right format with exchange-specific columns
+                        
+                        # Filter based on timeframe
+                        now = df['datetime'].max()
+                        
+                        if timeframe == '24h':
+                            cutoff = now - timedelta(days=1)
+                        elif timeframe == '7d':
+                            cutoff = now - timedelta(days=7)
+                        elif timeframe == '30d':
+                            cutoff = now - timedelta(days=30)
+                        else:
+                            cutoff = now - timedelta(days=1)  # Default to 24h
+                        
+                        df = df[df['datetime'] >= cutoff]
+                        
+                        result_df = df
+                except Exception as e:
+                    logger.error(f"Error processing exchange open interest history for {asset}: {e}")
+                
+    return result_df
+
+def create_spot_chart(chart_data, timeframe='24h'):
+    """
+    Create a line chart of spot prices
+    
+    Parameters:
+    -----------
+    chart_data : dict
+        Dictionary with chart data for each asset
+    timeframe : str
+        Timeframe to display (24h, 7d, 30d)
     
     Returns:
     --------
     plotly.graph_objects.Figure
-        Gauge chart
+        The chart figure
     """
-    # Get description and color
-    description, color = format_health_score(score)
+    if not chart_data:
+        return None
     
-    # Create gauge chart
-    fig = go.Figure(go.Indicator(
-        mode="gauge+number",
-        value=score,
-        domain={'x': [0, 1], 'y': [0, 1]},
-        title={'text': f"{title}<br><span style='font-size:0.8em;'>{description}</span>"},
-        gauge={
-            'axis': {'range': [0, 100], 'tickwidth': 1},
-            'bar': {'color': color},
-            'steps': [
-                {'range': [0, 30], 'color': 'rgba(244, 67, 54, 0.3)'},  # Red
-                {'range': [30, 45], 'color': 'rgba(255, 152, 0, 0.3)'},  # Orange
-                {'range': [45, 65], 'color': 'rgba(255, 193, 7, 0.3)'},  # Yellow
-                {'range': [65, 80], 'color': 'rgba(76, 175, 80, 0.3)'},  # Light green
-                {'range': [80, 100], 'color': 'rgba(28, 124, 84, 0.3)'}  # Green
-            ],
-            'threshold': {
-                'line': {'color': 'white', 'width': 4},
-                'thickness': 0.75,
-                'value': score
-            }
-        }
-    ))
+    # Create figure
+    fig = go.Figure()
+    
+    # Add a trace for each asset
+    for asset, df in chart_data.items():
+        if not df.empty:
+            fig.add_trace(
+                go.Scatter(
+                    x=df['datetime'],
+                    y=df['normalized_price'],
+                    mode='lines',
+                    name=asset
+                )
+            )
+    
+    # Set chart title based on timeframe
+    timeframe_text = "24 Hours" if timeframe == '24h' else ("7 Days" if timeframe == '7d' else "30 Days")
+    title = f"Spot Price Performance - Past {timeframe_text} (Normalized %)"
     
     # Update layout
     fig.update_layout(
-        height=200,
-        margin=dict(l=30, r=30, t=50, b=20),
-        paper_bgcolor="rgba(0,0,0,0)",
-        plot_bgcolor="rgba(0,0,0,0)",
-        font={'color': "white"}
+        title=title,
+        xaxis_title="Time",
+        yaxis_title="Price Change (%)",
+        hovermode="x unified"
+    )
+    
+    return apply_chart_theme(fig)
+
+def create_funding_rate_chart(df, asset='BTC', timeframe='24h'):
+    """
+    Create a line chart of funding rates
+    
+    Parameters:
+    -----------
+    df : pandas.DataFrame
+        DataFrame with funding rate data
+    asset : str
+        Asset being displayed
+    timeframe : str
+        Timeframe being displayed
+    
+    Returns:
+    --------
+    plotly.graph_objects.Figure
+        The chart figure
+    """
+    if df is None or df.empty:
+        return None
+    
+    # Create time series chart
+    timeframe_text = "24 Hours" if timeframe == '24h' else ("7 Days" if timeframe == '7d' else "30 Days")
+    title = f"{asset} Funding Rates by Exchange - Past {timeframe_text}"
+    
+    fig = create_time_series(
+        df=df,
+        x_col='datetime',
+        y_col='funding_rate',
+        title=title,
+        color_col='exchange'
+    )
+    
+    # Add a zero line
+    fig.add_hline(
+        y=0,
+        line_dash="dash",
+        line_color="red",
+        annotation_text="Neutral"
     )
     
     return fig
 
-def render_market_health_section(metrics):
+def create_open_interest_chart(df, asset='BTC', timeframe='24h'):
     """
-    Render the market health section with indicators and scores.
+    Create a chart of open interest
     
     Parameters:
     -----------
-    metrics : dict
-        Dictionary of intraday metrics for all assets
+    df : pandas.DataFrame
+        DataFrame with open interest data
+    asset : str
+        Asset being displayed
+    timeframe : str
+        Timeframe being displayed
+    
+    Returns:
+    --------
+    plotly.graph_objects.Figure
+        The chart figure
     """
-    st.subheader("Market Health Overview")
+    if df is None or df.empty:
+        return None
     
-    # Create columns for each asset
-    cols = st.columns(len(SUPPORTED_ASSETS))
+    timeframe_text = "24 Hours" if timeframe == '24h' else ("7 Days" if timeframe == '7d' else "30 Days")
+    title = f"{asset} Open Interest - Past {timeframe_text}"
     
-    # Add health indicators for each asset
-    for i, asset in enumerate(SUPPORTED_ASSETS):
-        with cols[i]:
-            if asset in metrics:
-                # Calculate health score
-                score, components = calculate_market_health_score(metrics, asset)
-                
-                # Display asset name and score
-                st.markdown(f"### {asset}")
-                
-                # Create gauge chart
-                gauge_fig = create_market_health_gauge(score, f"{asset} Health")
-                st.plotly_chart(gauge_fig, use_container_width=True)
-                
-                # Add component scores in a compact format
-                if components:
-                    # Format component labels
-                    component_labels = {
-                        'price_momentum': 'Price Momentum',
-                        'open_interest': 'Open Interest',
-                        'buy_sell_balance': 'Buy/Sell Balance',
-                        'funding_rate': 'Funding Rate',
-                        'liquidation_risk': 'Liquidation Risk'
-                    }
-                    
-                    # Display components in a compact table
-                    component_data = []
-                    for component, component_score in components.items():
-                        if component != 'overall':
-                            description, color = format_health_score(component_score)
-                            component_data.append({
-                                'Component': component_labels.get(component, component),
-                                'Score': f"{component_score:.0f}/100",
-                                'Status': description
-                            })
-                    
-                    if component_data:
-                        component_df = pd.DataFrame(component_data)
-                        st.dataframe(component_df, hide_index=True, use_container_width=True)
-            else:
-                st.markdown(f"### {asset}")
-                st.info("No data available for health calculation")
-
-def render_intraday_changes(metrics):
-    """
-    Render the intraday changes section showing price and OI changes.
-    
-    Parameters:
-    -----------
-    metrics : dict
-        Dictionary of intraday metrics for all assets
-    """
-    st.subheader("Intraday Changes")
-    
-    # Define time periods to display
-    periods = ['1h', '4h', '24h']
-    
-    # Create columns for each metric type
-    metric_types = ["Price Change %", "Open Interest Change %"]
-    
-    # Create a formatted table
-    table_data = []
-    
-    # Add data for each asset
-    for asset in SUPPORTED_ASSETS:
-        if asset in metrics:
-            asset_metrics = metrics[asset]
-            row = {'Asset': asset}
-            
-            # Add price change metrics
-            for period in periods:
-                price_key = f'price_change_{period}'
-                if price_key in asset_metrics:
-                    row[f'Price {period}'] = asset_metrics[price_key]
-                else:
-                    row[f'Price {period}'] = None
-            
-            # Add OI change metrics
-            for period in periods:
-                oi_key = f'oi_change_{period}'
-                if oi_key in asset_metrics:
-                    row[f'OI {period}'] = asset_metrics[oi_key]
-                else:
-                    row[f'OI {period}'] = None
-            
-            table_data.append(row)
-    
-    # Create DataFrame
-    if table_data:
-        df = pd.DataFrame(table_data)
-        
-        # Formatting function for numeric columns
-        def format_change(val):
-            if pd.isna(val):
-                return ""
-            color = "green" if val > 0 else "red" if val < 0 else "white"
-            sign = "+" if val > 0 else ""
-            return f"<span style='color:{color}'>{sign}{val:.2f}%</span>"
-        
-        # Create styled table
-        if len(df) > 0:
-            # Create two columns
-            col1, col2 = st.columns(2)
-            
-            with col1:
-                st.markdown("#### Price Changes")
-                # Select only price columns
-                price_cols = ['Asset'] + [f'Price {p}' for p in periods]
-                price_df = df[price_cols]
-                
-                # Apply styling
-                st.write(price_df.style.format({
-                    col: format_change for col in price_cols if col != 'Asset'
-                }).to_html(), unsafe_allow_html=True)
-            
-            with col2:
-                st.markdown("#### Open Interest Changes")
-                # Select only OI columns
-                oi_cols = ['Asset'] + [f'OI {p}' for p in periods]
-                oi_df = df[oi_cols]
-                
-                # Apply styling
-                st.write(oi_df.style.format({
-                    col: format_change for col in oi_cols if col != 'Asset'
-                }).to_html(), unsafe_allow_html=True)
-    else:
-        st.info("No intraday change data available")
-
-def render_futures_liquidity_section(metrics, selected_asset='BTC'):
-    """
-    Render the futures liquidity section with key metrics.
-    
-    Parameters:
-    -----------
-    metrics : dict
-        Dictionary of intraday metrics for all assets
-    selected_asset : str
-        Selected asset to display detailed metrics for
-    """
-    st.subheader(f"Futures Market Liquidity ({selected_asset})")
-    
-    if selected_asset in metrics:
-        asset_metrics = metrics[selected_asset]
-        
-        # Create three columns for key metrics
-        col1, col2, col3 = st.columns(3)
-        
-        with col1:
-            # Open Interest
-            if 'total_oi' in asset_metrics:
-                oi_value = asset_metrics['total_oi']
-                oi_change = asset_metrics.get('oi_change_24h', 0)
-                
-                display_metric_card(
-                    "Total Open Interest",
-                    oi_value,
-                    oi_change,
-                    is_currency=True,
-                    delta_is_percent=True,
-                    abbreviate=True
-                )
-            else:
-                st.metric("Total Open Interest", "N/A")
-        
-        with col2:
-            # Taker Buy/Sell Ratio
-            if 'taker_buy_sell_ratio_24h' in asset_metrics:
-                ratio = asset_metrics['taker_buy_sell_ratio_24h']
-                # Compare to neutral 1.0 for delta
-                ratio_delta = (ratio - 1.0) * 100  # Convert to percentage difference from 1.0
-                
-                display_metric_card(
-                    "Taker Buy/Sell Ratio (24h)",
-                    ratio,
-                    ratio_delta,
-                    is_currency=False,
-                    delta_is_percent=True,
-                    formatter=lambda x: f"{x:.2f}",
-                    delta_formatter=lambda x: f"{x:+.2f}%"
-                )
-            else:
-                st.metric("Taker Buy/Sell Ratio (24h)", "N/A")
-        
-        with col3:
-            # Funding Rate
-            if 'avg_funding_rate_24h' in asset_metrics:
-                funding_rate = asset_metrics['avg_funding_rate_24h']
-                
-                display_metric_card(
-                    "Average Funding Rate (24h)",
-                    funding_rate,
-                    None,
-                    is_currency=False,
-                    formatter=lambda x: format_percentage(x, precision=4, show_plus=True)
-                )
-            else:
-                st.metric("Average Funding Rate (24h)", "N/A")
-        
-        # Add additional metrics in a second row
-        col4, col5, col6 = st.columns(3)
-        
-        with col4:
-            # Long Liquidations
-            if 'long_liquidation_24h' in asset_metrics:
-                long_liq = asset_metrics['long_liquidation_24h']
-                
-                display_metric_card(
-                    "Long Liquidations (24h)",
-                    long_liq,
-                    None,
-                    is_currency=True,
-                    abbreviate=True
-                )
-            else:
-                st.metric("Long Liquidations (24h)", "N/A")
-        
-        with col5:
-            # Short Liquidations
-            if 'short_liquidation_24h' in asset_metrics:
-                short_liq = asset_metrics['short_liquidation_24h']
-                
-                display_metric_card(
-                    "Short Liquidations (24h)",
-                    short_liq,
-                    None,
-                    is_currency=True,
-                    abbreviate=True
-                )
-            else:
-                st.metric("Short Liquidations (24h)", "N/A")
-        
-        with col6:
-            # Liquidation Ratio
-            if 'long_liquidation_24h' in asset_metrics and 'short_liquidation_24h' in asset_metrics:
-                long_liq = asset_metrics['long_liquidation_24h']
-                short_liq = asset_metrics['short_liquidation_24h']
-                
-                # Calculate ratio (handle division by zero)
-                if short_liq > 0:
-                    liq_ratio = long_liq / short_liq
-                else:
-                    liq_ratio = float('inf') if long_liq > 0 else 0
-                
-                # Format ratio for display
-                if liq_ratio == float('inf'):
-                    liq_ratio_display = "∞"
-                else:
-                    liq_ratio_display = f"{liq_ratio:.2f}"
-                
-                st.metric("Long/Short Liquidation Ratio", liq_ratio_display)
-            else:
-                st.metric("Long/Short Liquidation Ratio", "N/A")
-        
-        # Create expander for visualizations
-        with st.expander("Liquidity Visualizations", expanded=True):
-            # Load specific liquidity data
-            try:
-                # Get the latest data directory
-                data_dir = get_latest_data_directory()
-                
-                # Load OI by exchange data
-                oi_data = load_data_for_category('futures', 'open_interest', selected_asset, data_dir)
-                oi_exchange_key = f"api_futures_openInterest_exchange_list_{selected_asset}"
-                
-                if oi_data and oi_exchange_key in oi_data:
-                    oi_df = oi_data[oi_exchange_key]
-                    
-                    # Check if data has required columns
-                    if 'exchange_name' in oi_df.columns and 'open_interest_usd' in oi_df.columns:
-                        # Remove 'All' row
-                        oi_df = oi_df[oi_df['exchange_name'] != 'All']
-                        
-                        # Sort by open interest value
-                        oi_df = oi_df.sort_values('open_interest_usd', ascending=False)
-                        
-                        # Create bar chart showing OI by exchange
-                        oi_fig = create_bar_chart(
-                            oi_df,
-                            'exchange_name',
-                            'open_interest_usd',
-                            f"{selected_asset} Open Interest by Exchange",
-                            color_discrete_map=EXCHANGE_COLORS
-                        )
-                        
-                        st.plotly_chart(oi_fig, use_container_width=True)
-                        
-                        # Calculate OI by margin type
-                        if 'stablecoin_open_interest_usd' in oi_df.columns and 'coin_open_interest_usd' in oi_df.columns:
-                            # Sum OI by margin type
-                            stablecoin_oi = oi_df['stablecoin_open_interest_usd'].sum()
-                            coin_oi = oi_df['coin_open_interest_usd'].sum()
-                            
-                            # Create pie chart
-                            margin_data = pd.DataFrame({
-                                'margin_type': ['Stablecoin-Margined', 'Coin-Margined'],
-                                'open_interest_usd': [stablecoin_oi, coin_oi]
-                            })
-                            
-                            margin_fig = create_pie_chart(
-                                margin_data,
-                                'open_interest_usd',
-                                'margin_type',
-                                f"{selected_asset} Open Interest by Margin Type"
-                            )
-                            
-                            st.plotly_chart(margin_fig, use_container_width=True)
-                
-                # Load liquidation data
-                liquidation_data = load_data_for_category('futures', 'liquidation', selected_asset, data_dir)
-                liq_history_key = f"api_futures_liquidation_aggregated_coin_history_{selected_asset}"
-                
-                if liquidation_data and liq_history_key in liquidation_data:
-                    liq_df = liquidation_data[liq_history_key]
-                    liq_df = process_timestamps(liq_df)
-                    
-                    # Create liquidation chart
-                    if 'datetime' in liq_df.columns and 'long_liquidation_usd' in liq_df.columns and 'short_liquidation_usd' in liq_df.columns:
-                        # Filter to last 7 days
-                        last_7d = datetime.now() - timedelta(days=7)
-                        liq_7d = liq_df[liq_df['datetime'] >= last_7d]
-                        
-                        # Create stacked bar chart
-                        liq_fig = go.Figure()
-                        
-                        # Add long liquidations
-                        liq_fig.add_trace(go.Bar(
-                            x=liq_7d['datetime'],
-                            y=liq_7d['long_liquidation_usd'],
-                            name='Long Liquidations',
-                            marker_color='red'
-                        ))
-                        
-                        # Add short liquidations
-                        liq_fig.add_trace(go.Bar(
-                            x=liq_7d['datetime'],
-                            y=liq_7d['short_liquidation_usd'],
-                            name='Short Liquidations',
-                            marker_color='green'
-                        ))
-                        
-                        # Update layout
-                        liq_fig.update_layout(
-                            title=f"{selected_asset} Liquidations (Last 7 Days)",
-                            barmode='group',
-                            xaxis_title=None,
-                            yaxis_title="Liquidation Amount (USD)",
-                            legend=dict(
-                                orientation="h",
-                                yanchor="bottom",
-                                y=1.02,
-                                xanchor="right",
-                                x=1
-                            )
-                        )
-                        
-                        # Apply theme
-                        liq_fig = apply_chart_theme(liq_fig)
-                        
-                        st.plotly_chart(liq_fig, use_container_width=True)
-            
-            except Exception as e:
-                logger.error(f"Error rendering liquidity visualizations: {e}")
-                st.warning("Error loading liquidity visualizations")
-    else:
-        st.info(f"No liquidity data available for {selected_asset}")
-
-def render_market_concentration_section(metrics):
-    """
-    Render the market concentration section showing distribution of liquidity.
-    
-    Parameters:
-    -----------
-    metrics : dict
-        Dictionary of intraday metrics for all assets
-    """
-    st.subheader("Market Concentration")
-    
-    # Create OI comparison chart
-    oi_data = []
-    for asset in SUPPORTED_ASSETS:
-        if asset in metrics and 'total_oi' in metrics[asset]:
-            oi_data.append({
-                'Asset': asset,
-                'Open Interest': metrics[asset]['total_oi']
-            })
-    
-    if oi_data:
-        oi_df = pd.DataFrame(oi_data)
-        
-        # Create bar chart for OI
-        oi_fig = go.Figure(go.Bar(
-            x=oi_df['Asset'],
-            y=oi_df['Open Interest'],
-            text=oi_df['Open Interest'].apply(lambda x: format_currency(x, abbreviate=True)),
-            textposition='auto',
-            marker_color=[ASSET_COLORS.get(asset, '#3366CC') for asset in oi_df['Asset']]
-        ))
-        
-        # Update layout
-        oi_fig.update_layout(
-            title="Open Interest Comparison",
-            xaxis_title=None,
-            yaxis_title="Open Interest (USD)",
-            yaxis=dict(
-                tickformat=",",
-                tickprefix="$"
-            )
+    # Check if we have a column for open interest or if this is exchange-specific data
+    if 'open_interest' in df.columns:
+        # Simple time series
+        fig = create_time_series(
+            df=df,
+            x_col='datetime',
+            y_col='open_interest',
+            title=title
         )
+    else:
+        # This is likely exchange-specific data with multiple columns
+        # Let's create an area chart with exchanges as separate series
+        # First identify exchange columns
+        exchange_cols = [col for col in df.columns if col not in ['datetime', 'time']]
         
-        # Apply theme
-        oi_fig = apply_chart_theme(oi_fig)
-        
-        # Add the chart
-        st.plotly_chart(oi_fig, use_container_width=True)
+        if exchange_cols:
+            # Create area chart
+            fig = create_area_chart(
+                df=df,
+                x_col='datetime',
+                y_col=exchange_cols,
+                title=title,
+                stacked=True
+            )
+        else:
+            # Fallback
+            fig = go.Figure()
+            fig.update_layout(title=title)
     
-    # Try to load exchange-specific data
-    try:
-        # Get the latest data directory
-        data_dir = get_latest_data_directory()
-        
-        # Choose the first asset with available data
-        for asset in SUPPORTED_ASSETS:
-            # Load OI by exchange data
-            oi_data = load_data_for_category('futures', 'open_interest', asset, data_dir)
-            oi_exchange_key = f"api_futures_openInterest_exchange_list_{asset}"
-            
-            if oi_data and oi_exchange_key in oi_data:
-                oi_df = oi_data[oi_exchange_key]
-                
-                # Check if data has required columns
-                if 'exchange_name' in oi_df.columns and 'open_interest_usd' in oi_df.columns:
-                    # Remove 'All' row
-                    oi_df = oi_df[oi_df['exchange_name'] != 'All']
-                    
-                    # Sort by open interest value
-                    oi_df = oi_df.sort_values('open_interest_usd', ascending=False)
-                    
-                    # Create treemap showing market concentration
-                    treemap_data = []
-                    for i, row in oi_df.iterrows():
-                        treemap_data.append({
-                            'Exchange': row['exchange_name'],
-                            'Asset': asset,
-                            'Open Interest': row['open_interest_usd']
-                        })
-                    
-                    treemap_df = pd.DataFrame(treemap_data)
-                    
-                    # Create treemap
-                    if not treemap_df.empty:
-                        treemap_fig = create_treemap_chart(
-                            treemap_df,
-                            'Open Interest',
-                            'Exchange',
-                            'Asset',
-                            f"{asset} Open Interest by Exchange"
-                        )
-                        
-                        st.plotly_chart(treemap_fig, use_container_width=True)
-                    
-                    break  # Only show for one asset
-    
-    except Exception as e:
-        logger.error(f"Error rendering market concentration: {e}")
-        st.warning("Error loading market concentration data")
+    return fig
 
 def main():
     """Main function to render the report page."""
@@ -1026,92 +633,91 @@ def main():
     # Render sidebar
     render_sidebar()
     
-    # Page title
-    st.title("Overview")
+    # Page title and description
+    st.title("Crypto Liquidity Report")
+    st.write("Overview of market conditions, focusing on intraday liquidity metrics")
     
-    # Add last updated info
-    last_updated = get_latest_data_directory()
-    if last_updated:
-        try:
-            last_updated_date = datetime.strptime(last_updated, "%Y%m%d")
-            st.caption(f"Data last updated: {last_updated_date.strftime('%Y-%m-%d')}")
-        except:
-            st.caption(f"Data last updated: {last_updated}")
+    # Display loading message
+    with st.spinner("Loading data..."):
+        data = load_report_data()
     
-    # Load intraday metrics
-    metrics = load_intraday_metrics()
-    
-    if not metrics:
-        st.error("No data available. Please check the data directory.")
+    # Check if data is available
+    if not data:
+        st.error("No data available. Please check your data sources.")
         return
     
-    # Create tabs for different sections
-    tab1, tab2, tab3, tab4 = st.tabs([
-        "Market Overview", 
-        "Market Health", 
-        "Futures Liquidity", 
-        "Market Concentration"
-    ])
+    # Create a single main section
+    main_container = st.container()
     
-    with tab1:
-        # Overview tab
-        # Display key metrics table
-        metrics_df = create_key_metrics_table(metrics)
+    with main_container:
+        # Create time range selector above charts
+        time_ranges = {
+            '24h': 'Intraday (24h)',
+            '7d': 'Weekly (7d)',
+            '30d': 'Monthly (30d)'
+        }
+        selected_timeframe = st.radio("Select Time Range", options=list(time_ranges.keys()), format_func=lambda x: time_ranges[x], horizontal=True, index=0)
         
-        # Add conditional formatting
-        def highlight_positive(val):
-            if isinstance(val, (int, float)):
-                if val > 0:
-                    return 'color: green'
-                elif val < 0:
-                    return 'color: red'
-            return ''
+        # 1. Summary price table
+        st.subheader("Price Comparison: Spot vs Futures Markets")
         
-        # Apply formatting and show table
-        if not metrics_df.empty:
-            # Create formatted dictionary for numeric columns
+        price_df = prepare_price_comparison_dataframe(data)
+        
+        if not price_df.empty:
+            # Define formatting for the table
             format_dict = {
-                'Price (USD)': lambda x: format_currency(x, precision=2) if pd.notna(x) else 'N/A',
-                'Price Change (24h)': lambda x: format_percentage(x, show_plus=True) if pd.notna(x) else 'N/A',
-                'Open Interest': lambda x: format_currency(x, abbreviate=True) if pd.notna(x) else 'N/A',
-                'OI Change (24h)': lambda x: format_percentage(x, show_plus=True) if pd.notna(x) else 'N/A',
-                'Buy/Sell Ratio': lambda x: f"{x:.2f}" if pd.notna(x) else 'N/A',
-                'Funding Rate (avg)': lambda x: format_percentage(x, show_plus=True, precision=4) if pd.notna(x) else 'N/A',
-                'Long Liquidations': lambda x: format_currency(x, abbreviate=True) if pd.notna(x) else 'N/A',
-                'Short Liquidations': lambda x: format_currency(x, abbreviate=True) if pd.notna(x) else 'N/A'
+                'Spot Price': lambda x: format_currency(x, precision=2),
+                'Spot 24h Change': lambda x: format_percentage(x, precision=2, show_plus=True),
+                'Spot 7d Change': lambda x: format_percentage(x, precision=2, show_plus=True),
+                'Spot 30d Change': lambda x: format_percentage(x, precision=2, show_plus=True),
+                'Futures Price': lambda x: format_currency(x, precision=2),
+                'Futures 24h Change': lambda x: format_percentage(x, precision=2, show_plus=True),
+                'Futures 7d Change': lambda x: format_percentage(x, precision=2, show_plus=True),
+                'Futures 30d Change': lambda x: format_percentage(x, precision=2, show_plus=True)
             }
             
-            # Display table with formatting
-            create_formatted_table(metrics_df, format_dict=format_dict)
+            create_formatted_table(price_df, format_dict=format_dict)
         else:
-            st.info("No metrics data available")
+            st.warning("No price comparison data available.")
         
-        # Add intraday changes section
-        render_intraday_changes(metrics)
-    
-    with tab2:
-        # Market Health tab
-        render_market_health_section(metrics)
-    
-    with tab3:
-        # Futures Liquidity tab
-        # Add asset selector
-        selected_asset = st.selectbox(
-            "Select Asset",
-            SUPPORTED_ASSETS,
-            index=0,  # Default to BTC
-            key="futures_liquidity_asset_selector"
-        )
+        # 2. Spot price chart
+        st.subheader("Spot Price Performance")
         
-        # Update current asset in session state
-        st.session_state.selected_asset = selected_asset
+        spot_chart_data = prepare_spot_price_chart_data(data, timeframe=selected_timeframe)
+        spot_chart = create_spot_chart(spot_chart_data, timeframe=selected_timeframe)
         
-        # Render liquidity section for selected asset
-        render_futures_liquidity_section(metrics, selected_asset)
-    
-    with tab4:
-        # Market Concentration tab
-        render_market_concentration_section(metrics)
+        if spot_chart:
+            display_chart(spot_chart)
+        else:
+            st.warning("No spot price chart data available.")
+        
+        # 3. Funding rate chart
+        st.subheader("Funding Rates")
+        
+        # Asset selector for funding rate chart
+        funding_asset = st.selectbox("Select Asset", options=SUPPORTED_ASSETS[:4], index=0)
+        
+        funding_df = prepare_funding_rate_chart_data(data, asset=funding_asset, timeframe=selected_timeframe)
+        funding_chart = create_funding_rate_chart(funding_df, asset=funding_asset, timeframe=selected_timeframe)
+        
+        if funding_chart:
+            display_chart(funding_chart)
+        else:
+            st.warning(f"No funding rate data available for {funding_asset}.")
+        
+        # 4. Open interest chart
+        st.subheader("Open Interest")
+        
+        # Asset selector for open interest chart
+        oi_asset = st.selectbox("Select Asset for Open Interest", options=SUPPORTED_ASSETS[:4], index=0, key="oi_asset_selector")
+        
+        oi_df = prepare_open_interest_chart_data(data, asset=oi_asset, timeframe=selected_timeframe)
+        oi_chart = create_open_interest_chart(oi_df, asset=oi_asset, timeframe=selected_timeframe)
+        
+        if oi_chart:
+            display_chart(oi_chart)
+        else:
+            st.warning(f"No open interest data available for {oi_asset}.")
 
 if __name__ == "__main__":
     main()

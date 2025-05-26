@@ -206,7 +206,7 @@ def prepare_price_comparison_dataframe(data):
                         if not day_df.empty:
                             first_price = day_df['close'].iloc[0]
                             last_price = day_df['close'].iloc[-1]
-                            asset_data['Spot 24h Change'] = (last_price - first_price) / first_price * 100
+                            asset_data['Spot 24h Change'] = (last_price - first_price) / first_price
                         
                         # 7d change
                         week_ago = now - timedelta(days=7)
@@ -214,7 +214,7 @@ def prepare_price_comparison_dataframe(data):
                         if not week_df.empty:
                             first_price = week_df['close'].iloc[0]
                             last_price = week_df['close'].iloc[-1]
-                            asset_data['Spot 7d Change'] = (last_price - first_price) / first_price * 100
+                            asset_data['Spot 7d Change'] = (last_price - first_price) / first_price
                         
                         # 30d change
                         month_ago = now - timedelta(days=30)
@@ -222,7 +222,7 @@ def prepare_price_comparison_dataframe(data):
                         if not month_df.empty:
                             first_price = month_df['close'].iloc[0]
                             last_price = month_df['close'].iloc[-1]
-                            asset_data['Spot 30d Change'] = (last_price - first_price) / first_price * 100
+                            asset_data['Spot 30d Change'] = (last_price - first_price) / first_price
             except Exception as e:
                 logger.error(f"Error processing spot data for {asset}: {e}")
         
@@ -239,7 +239,7 @@ def prepare_price_comparison_dataframe(data):
                         
                         # Use the average price change across all exchanges
                         if 'price_change_percent_24h' in futures_df.columns:
-                            asset_data['Futures 24h Change'] = futures_df['price_change_percent_24h'].mean()
+                            asset_data['Futures 24h Change'] = futures_df['price_change_percent_24h'].mean() / 100
                 
                 # For 7d and 30d changes, we need OHLC data from price_ohlc_history
                 price_ohlc_key = 'api_price_ohlc_history'
@@ -258,7 +258,7 @@ def prepare_price_comparison_dataframe(data):
                         if not week_df.empty:
                             first_price = week_df['close'].iloc[0]
                             last_price = week_df['close'].iloc[-1]
-                            asset_data['Futures 7d Change'] = (last_price - first_price) / first_price * 100
+                            asset_data['Futures 7d Change'] = (last_price - first_price) / first_price
                         
                         # 30d change
                         month_ago = now - timedelta(days=30)
@@ -266,7 +266,7 @@ def prepare_price_comparison_dataframe(data):
                         if not month_df.empty:
                             first_price = month_df['close'].iloc[0]
                             last_price = month_df['close'].iloc[-1]
-                            asset_data['Futures 30d Change'] = (last_price - first_price) / first_price * 100
+                            asset_data['Futures 30d Change'] = (last_price - first_price) / first_price
             except Exception as e:
                 logger.error(f"Error processing futures data for {asset}: {e}")
         
@@ -637,6 +637,20 @@ def main():
     st.title("Crypto Liquidity Report")
     st.write("Overview of market conditions, focusing on intraday liquidity metrics")
     
+    # Display latest data date
+    latest_dir = get_latest_data_directory()
+    if latest_dir:
+        # Extract date from directory name (format: YYYYMMDD)
+        date_str = os.path.basename(latest_dir)
+        try:
+            # Parse the date string and format it nicely
+            date_obj = datetime.strptime(date_str, '%Y%m%d')
+            formatted_date = date_obj.strftime('%Y-%m-%d')
+            st.caption(f"Latest data from: {formatted_date}")
+        except ValueError:
+            # If date parsing fails, just show the directory name
+            st.caption(f"Latest data from: {date_str}")
+    
     # Display loading message
     with st.spinner("Loading data..."):
         data = load_report_data()
@@ -677,6 +691,9 @@ def main():
             }
             
             create_formatted_table(price_df, format_dict=format_dict)
+            
+            # Add note about 24h change calculation
+            st.caption("Note: The 24h change represents the price difference between today's midnight (00:00 UTC) and yesterday's midnight (00:00 UTC) due to daily data granularity.")
         else:
             st.warning("No price comparison data available.")
         

@@ -108,6 +108,7 @@ def render_sidebar():
         # Define pages with their labels and file paths
         pages = [
             {"label": "Overview", "path": "app.py", "icon": "📊"},
+            {"label": "Report", "path": "pages/01_report.py", "icon": "📋"},
             {"label": "Futures", "path": "pages/03_futures.py", "icon": "🔄"},
             {"label": "Spot", "path": "pages/04_spot.py", "icon": "💱"},
             {"label": "Options", "path": "pages/07_options.py", "icon": "🎯"},  # Moved below Spot

@@ -103,3 +103,9 @@ This will generate a `data-saved.md` file showing which API endpoints have succe
 - Enhanced rate limiting for robust API data collection
 - Added comprehensive data structure documentation
 - Optimized chart rendering and data processing
+
+
+Perfect! Now please below this 'Funding Rate History by Exchange' section please add a new section called 'Funding Rate History - Open   │
+│   Interest Weighted', this new section should create a graph using the                                                                     │
+│   data/20250520/futures/funding_rate/api_futures_fundingRate_oi_weight_ohlc_history_XXX.parquet files. Please only section this new        │
+│   section and graph and keep all other aspects of the page and project the same.   

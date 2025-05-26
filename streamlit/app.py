@@ -58,115 +58,93 @@ def main():
         render_sidebar()
         
         # Page title and description
-        st.title(f"{APP_ICON} Izun Crypto Liquidity Report")
-        st.markdown("""
-        This platform provides real-time insights into crypto market liquidity across various metrics and exchanges.
-        Use the sidebar navigation to explore different sections of the report.
-        """)
-        
-        # Report Sections
-        st.header("Report Sections")
+        st.title("📊 Overview")
+        st.subheader("Guide to Izun Liquidity Report")
         
         # Create report section cards
         col1, col2 = st.columns(2)
         
         with col1:
+            # Report Section
+            st.subheader("📋 Report")
+            st.markdown("""
+            • Price comparison - Spot vs futures  
+            • Performance charts - All assets  
+            • Funding rates - By exchange  
+            • Open interest - Real-time tracking
+            """)
+            
             # Futures Section
             st.subheader("🔄 Futures")
             st.markdown("""
-            **Comprehensive futures market analysis including:**
-            - Open Interest metrics by exchange and asset
-            - Funding rates and historical trends
-            - Liquidation data analysis
-            - Long/short ratio indicators
-            - Order book depth and bid-ask spreads
-            - Trading volume by exchange
-            
-            Ideal for understanding derivatives market sentiment and liquidity conditions.
+            • Open Interest - By exchange  
+            • Funding rates - Historical data  
+            • Liquidations - Long/short volumes  
+            • Long/short ratios - Market positioning  
+            • Order book - Depth analysis  
+            • Taker flows - Buy/sell pressure
             """)
             
-            # ETF Section
-            st.subheader("📈 ETF")
-            st.markdown("""
-            **Detailed analysis of crypto ETF markets:**
-            - Bitcoin ETF flow data and AUM tracking
-            - Ethereum ETF metrics and comparison
-            - Premium/discount analysis
-            - Historical price and performance data
-            - Market share analysis by issuer
-            - Grayscale fund insights
-            
-            Essential for institutional market tracking and ETF performance comparison.
-            """)
-            
-            # Indicators Section
-            st.subheader("📉 Indicators")
-            st.markdown("""
-            **Market indicators and sentiment analysis:**
-            - Fear & Greed Index historical trends
-            - Bitcoin cycle indicators (Stock-to-Flow, Rainbow Chart)
-            - Bull market peak indicators
-            - Golden ratio multiplier
-            - Bitcoin profitable days percentage
-            - MVRV and Puell Multiple
-            - 200-week moving average heatmap
-            
-            Useful for market cycle analysis and sentiment tracking.
-            """)
-            
-            # Historical Section
-            st.subheader("📅 Historical")
-            st.markdown("""
-            **Long-term historical data and trends:**
-            - Extended historical price analysis
-            - Comparative performance across market cycles
-            - Long-term market metrics and correlations
-            - Historical liquidity trends
-            
-            Ideal for researching long-term market patterns and cyclical behaviors.
-            """)
-        
-        with col2:
             # Spot Section
             st.subheader("💱 Spot")
             st.markdown("""
-            **Spot market analysis across exchanges:**
-            - Trading volume by exchange and pair
-            - Spot order book depth analysis
-            - Bid-ask spread monitoring
-            - Taker buy/sell volume ratio
-            - Market concentration metrics
-            - Exchange comparison and market share
-            
-            Critical for understanding exchange liquidity and spot market trends.
+            • Price data - OHLC history  
+            • Trading pairs - All exchanges  
+            • Order books - Bid/ask depth  
+            • Volume analysis - 24h metrics  
+            • Market share - Exchange comparison
             """)
             
             # Options Section
             st.subheader("🎯 Options")
             st.markdown("""
-            **Options market metrics and analysis:**
-            - Open interest by strike price and expiry
-            - Put/call ratio tracking
-            - Options volume analysis
-            - Implied volatility surface
-            - Max pain analysis
-            - Exchange comparison for options markets
+            • Open interest - Strike distribution  
+            • Volume - Daily activity  
+            • Max pain - Key levels  
+            • Put/call ratio - Sentiment  
+            • Exchange data - Multi-venue
+            """)
+        
+        with col2:
+            # ETF Section
+            st.subheader("📈 ETF")
+            st.markdown("""
+            • Bitcoin ETFs - Flow tracking  
+            • Ethereum ETFs - AUM data  
+            • Premium/discount - NAV analysis  
+            • Grayscale - GBTC, ETHE metrics  
+            • Regional data - US, Hong Kong
+            """)
             
-            Valuable for understanding market sentiment and hedging activity.
+            # Indicators Section
+            st.subheader("📉 Indicators")
+            st.markdown("""
+            • Fear & Greed - Market sentiment  
+            • Rainbow chart - Price bands  
+            • Stock-to-Flow - Scarcity model  
+            • MVRV - Valuation metric  
+            • Pi Cycle - Top indicator  
+            • 200W MA - Heatmap analysis
             """)
             
             # On-Chain Section
             st.subheader("⛓️ On-Chain")
             st.markdown("""
-            **Blockchain network and on-chain analysis:**
-            - Exchange inflow/outflow tracking
-            - Exchange balance monitoring
-            - Network activity metrics
-            - Wallet distribution data
-            - Chain transaction metrics
-            - Supply distribution analysis
+            • Exchange balances - BTC, ETH, XRP  
+            • Flow tracking - In/out movements  
+            • Network activity - Transaction data  
+            • Supply metrics - Distribution  
+            • Reserve rankings - By exchange
+            """)
             
-            Essential for understanding network health and institutional movements.
+            # Historical Section
+            st.subheader("📅 Historical")
+            st.markdown("""
+            • Long-term data - Multi-year series  
+            • Market cycles - Bull/bear analysis  
+            • Correlations - Cross-asset  
+            • Custom ranges - Flexible queries  
+            • Trend analysis - Pattern detection
             """)
         
     except Exception as e:

@@ -2014,7 +2014,7 @@ def render_market_data_page(asset, all_selected_assets=None, selected_exchanges=
             logger.error(f"Error processing price history data: {e}")
             st.error(f"Error processing price data: {e}")
     else:
-        st.info(f"No price history data available for {asset}.")
+        st.info(f"Limited API data for {asset}.")
 
     # Trading pairs data - try multiple possible key formats
     pairs_df = None

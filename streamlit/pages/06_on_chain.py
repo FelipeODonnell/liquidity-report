@@ -115,11 +115,9 @@ def display_exchange_balance_analysis(exchange_balance_df, crypto):
         change_7d = exchange_balance_df['balance_change_7d'].sum() if 'balance_change_7d' in exchange_balance_df.columns else None
         change_30d = exchange_balance_df['balance_change_30d'].sum() if 'balance_change_30d' in exchange_balance_df.columns else None
         
-        # Calculate percentage changes
-        change_pct_1d = (change_1d / (total_balance - change_1d)) * 100 if total_balance != change_1d else 0
-        
         # Calculate weighted averages for percentage changes
         weights = exchange_balance_df['total_balance']
+        change_pct_1d = (exchange_balance_df['balance_change_percent_1d'] * weights).sum() / weights.sum() if weights.sum() > 0 else 0
         change_pct_7d = (exchange_balance_df['balance_change_percent_7d'] * weights).sum() / weights.sum() if weights.sum() > 0 and 'balance_change_percent_7d' in exchange_balance_df.columns else None
         change_pct_30d = (exchange_balance_df['balance_change_percent_30d'] * weights).sum() / weights.sum() if weights.sum() > 0 and 'balance_change_percent_30d' in exchange_balance_df.columns else None
         
@@ -155,9 +153,9 @@ def display_exchange_balance_analysis(exchange_balance_df, crypto):
         
         formatters = {
             f"Total {crypto} Exchange Balance": lambda x: format_currency(x, abbreviate=True),
-            "24h Change %": lambda x: format_percentage(x),
-            "7d Change %": lambda x: format_percentage(x),
-            "30d Change %": lambda x: format_percentage(x)
+            "24h Change %": lambda x: format_percentage(x / 100),
+            "7d Change %": lambda x: format_percentage(x / 100),
+            "30d Change %": lambda x: format_percentage(x / 100)
         }
         
         display_metrics_row(metrics, formatters)
@@ -177,11 +175,11 @@ def display_exchange_balance_analysis(exchange_balance_df, crypto):
         format_dict={
             'total_balance': lambda x: format_currency(x, abbreviate=True),
             'balance_change_1d': lambda x: format_currency(x, abbreviate=True),
-            'balance_change_percent_1d': lambda x: format_percentage(x),
+            'balance_change_percent_1d': lambda x: format_percentage(x / 100),
             'balance_change_7d': lambda x: format_currency(x, abbreviate=True) if 'balance_change_7d' in exchange_balance_df.columns else None,
-            'balance_change_percent_7d': lambda x: format_percentage(x) if 'balance_change_percent_7d' in exchange_balance_df.columns else None,
+            'balance_change_percent_7d': lambda x: format_percentage(x / 100) if 'balance_change_percent_7d' in exchange_balance_df.columns else None,
             'balance_change_30d': lambda x: format_currency(x, abbreviate=True) if 'balance_change_30d' in exchange_balance_df.columns else None,
-            'balance_change_percent_30d': lambda x: format_percentage(x) if 'balance_change_percent_30d' in exchange_balance_df.columns else None
+            'balance_change_percent_30d': lambda x: format_percentage(x / 100) if 'balance_change_percent_30d' in exchange_balance_df.columns else None
         }
     )
     

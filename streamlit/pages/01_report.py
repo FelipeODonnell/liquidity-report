@@ -51,6 +51,7 @@ summary table at the top to detailed charts below.
 
 import streamlit as st
 import pandas as pd
+import numpy as np
 import plotly.express as px
 import plotly.graph_objects as go
 from datetime import datetime, timedelta
@@ -158,6 +159,34 @@ def load_report_data():
             open_interest_data[asset] = oi_asset_data
     
     data['open_interest'] = open_interest_data
+    
+    # Load funding rate exchange list data for tables
+    try:
+        # Current funding rates - load directly as these are special format files
+        # Ensure we have the full path including 'data' directory
+        if not latest_dir.startswith('data'):
+            data_path = os.path.join('data', latest_dir)
+        else:
+            data_path = latest_dir
+            
+        current_funding_file = os.path.join(data_path, 'futures', 'funding_rate', 'api_futures_fundingRate_exchange_list.parquet')
+        if os.path.exists(current_funding_file):
+            data['current_funding_rates'] = pd.read_parquet(current_funding_file)
+            logger.info(f"Loaded current funding rates: {len(data['current_funding_rates'])} rows")
+            logger.info(f"Current funding rates columns: {data['current_funding_rates'].columns.tolist()}")
+        else:
+            logger.warning(f"Current funding rates file not found: {current_funding_file}")
+            
+        # Accumulated funding rates - load directly as these are special format files  
+        accumulated_funding_file = os.path.join(data_path, 'futures', 'funding_rate', 'api_futures_fundingRate_accumulated_exchange_list.parquet')
+        if os.path.exists(accumulated_funding_file):
+            data['accumulated_funding_rates'] = pd.read_parquet(accumulated_funding_file)
+            logger.info(f"Loaded accumulated funding rates: {len(data['accumulated_funding_rates'])} rows")
+            logger.info(f"Accumulated funding rates columns: {data['accumulated_funding_rates'].columns.tolist()}")
+        else:
+            logger.warning(f"Accumulated funding rates file not found: {accumulated_funding_file}")
+    except Exception as e:
+        logger.error(f"Error loading funding rate exchange list data: {e}")
     
     return data
 
@@ -572,6 +601,228 @@ def create_funding_rate_chart(df, asset='BTC', timeframe='24h'):
     
     return fig
 
+def calculate_annualized_rate(current_rate, interval_hours):
+    """
+    Calculate annualized funding rate.
+    
+    Parameters:
+    -----------
+    current_rate : float
+        The current funding rate
+    interval_hours : float
+        The funding interval in hours
+    
+    Returns:
+    --------
+    float
+        Annualized funding rate
+    """
+    try:
+        if pd.isna(current_rate):
+            return None
+        if pd.isna(interval_hours) or interval_hours <= 0:
+            # Default to 8-hour interval if not specified
+            interval_hours = 8.0
+        # Formula: current_rate × (24 / interval_hours) × 365
+        return float(current_rate) * (24 / float(interval_hours)) * 365
+    except Exception as e:
+        logger.error(f"Error calculating annualized rate: {e}")
+        return None
+
+def prepare_current_funding_rate_table(data, selected_assets=None, selected_exchanges=None, 
+                                      rate_display='annualized'):
+    """
+    Prepare current funding rate data for table display.
+    
+    Parameters:
+    -----------
+    data : dict
+        The loaded data dictionary
+    selected_assets : list, optional
+        List of assets to display
+    selected_exchanges : list, optional
+        List of exchanges to display
+    rate_display : str
+        'annualized' (default) or 'current'
+        
+    Returns:
+    --------
+    pandas.DataFrame
+        DataFrame ready for table display
+    """
+    if 'current_funding_rates' not in data or data['current_funding_rates'] is None:
+        return pd.DataFrame()
+    
+    try:
+        df = data['current_funding_rates'].copy()
+        
+        # Use stablecoin margin column
+        margin_col = 'stablecoin_margin_list'
+        if margin_col not in df.columns:
+            logger.error(f"Column {margin_col} not found in current funding rates data")
+            return pd.DataFrame()
+        
+        # Initialize list to store processed data
+        processed_data = []
+        
+        # Process each asset
+        for idx, row in df.iterrows():
+            symbol = row['symbol']
+            
+            # Skip if asset filter is applied and asset not selected
+            if selected_assets and symbol not in selected_assets:
+                continue
+            
+            # Get funding data for the margin type
+            funding_list = row[margin_col]
+            if not isinstance(funding_list, (list, np.ndarray)) or len(funding_list) == 0:
+                continue
+            
+            # Create a dictionary to store exchange rates for this asset
+            asset_data = {'Asset': symbol}
+            
+            # Process each exchange
+            for exchange_data in funding_list:
+                if not isinstance(exchange_data, dict):
+                    continue
+                    
+                exchange = exchange_data.get('exchange', '')
+                
+                # Skip if exchange filter is applied and exchange not selected
+                if selected_exchanges and exchange not in selected_exchanges:
+                    continue
+                
+                funding_rate = exchange_data.get('funding_rate', None)
+                interval = exchange_data.get('funding_rate_interval', 8.0)
+                
+                # Calculate rate based on display mode
+                if rate_display == 'annualized' and funding_rate is not None:
+                    display_rate = calculate_annualized_rate(funding_rate, interval)
+                else:
+                    display_rate = funding_rate
+                
+                # Store the rate
+                asset_data[exchange] = display_rate
+            
+            # Only add if we have at least one exchange rate
+            if len(asset_data) > 1:  # More than just the 'Asset' key
+                processed_data.append(asset_data)
+        
+        # Create DataFrame from processed data
+        result_df = pd.DataFrame(processed_data)
+        
+        # Sort by asset symbol
+        if not result_df.empty:
+            result_df = result_df.sort_values('Asset')
+            
+            # Limit to top 20 assets if no specific assets selected
+            if not selected_assets and len(result_df) > 20:
+                result_df = result_df.head(20)
+        
+        return result_df
+        
+    except Exception as e:
+        logger.error(f"Error preparing current funding rate table: {e}")
+        return pd.DataFrame()
+
+def prepare_accumulated_funding_rate_table(data, selected_assets=None, selected_exchanges=None):
+    """
+    Prepare accumulated funding rate data for table display.
+    Note: Data represents 365 days of accumulated funding.
+    
+    Parameters:
+    -----------
+    data : dict
+        The loaded data dictionary
+    selected_assets : list, optional
+        List of assets to display
+    selected_exchanges : list, optional
+        List of exchanges to display
+        
+    Returns:
+    --------
+    pandas.DataFrame
+        DataFrame ready for table display with summary row
+    """
+    if 'accumulated_funding_rates' not in data or data['accumulated_funding_rates'] is None:
+        return pd.DataFrame()
+    
+    try:
+        df = data['accumulated_funding_rates'].copy()
+        
+        # Use stablecoin margin column
+        margin_col = 'stablecoin_margin_list'
+        if margin_col not in df.columns:
+            logger.error(f"Column {margin_col} not found in accumulated funding rates data")
+            return pd.DataFrame()
+        
+        # Initialize list to store processed data
+        processed_data = []
+        
+        # Process each asset
+        for idx, row in df.iterrows():
+            symbol = row['symbol']
+            
+            # Skip if asset filter is applied and asset not selected
+            if selected_assets and symbol not in selected_assets:
+                continue
+            
+            # Get funding data for the margin type
+            funding_list = row[margin_col]
+            if not isinstance(funding_list, (list, np.ndarray)) or len(funding_list) == 0:
+                continue
+            
+            # Create a dictionary to store exchange rates for this asset
+            asset_data = {'Asset': symbol}
+            
+            # Process each exchange
+            for exchange_data in funding_list:
+                if not isinstance(exchange_data, dict):
+                    continue
+                    
+                exchange = exchange_data.get('exchange', '')
+                
+                # Skip if exchange filter is applied and exchange not selected
+                if selected_exchanges and exchange not in selected_exchanges:
+                    continue
+                
+                funding_rate = exchange_data.get('funding_rate', None)
+                
+                # Store the accumulated rate (already represents 365 days)
+                asset_data[exchange] = funding_rate
+            
+            # Only add if we have at least one exchange rate
+            if len(asset_data) > 1:  # More than just the 'Asset' key
+                processed_data.append(asset_data)
+        
+        # Create DataFrame from processed data
+        result_df = pd.DataFrame(processed_data)
+        
+        if not result_df.empty:
+            # Sort by asset symbol
+            result_df = result_df.sort_values('Asset')
+            
+            # Limit to top 20 assets if no specific assets selected
+            if not selected_assets and len(result_df) > 20:
+                result_df = result_df.head(20)
+            
+            # Calculate average for each exchange (summary row)
+            exchange_cols = [col for col in result_df.columns if col != 'Asset']
+            if exchange_cols:
+                avg_data = {'Asset': 'Average'}
+                for exchange in exchange_cols:
+                    # Calculate average, ignoring NaN values
+                    avg_data[exchange] = result_df[exchange].mean()
+                
+                # Add summary row
+                result_df = pd.concat([result_df, pd.DataFrame([avg_data])], ignore_index=True)
+        
+        return result_df
+        
+    except Exception as e:
+        logger.error(f"Error preparing accumulated funding rate table: {e}")
+        return pd.DataFrame()
+
 def create_open_interest_chart(df, asset='BTC', timeframe='24h'):
     """
     Create a chart of open interest
@@ -735,6 +986,146 @@ def main():
             display_chart(oi_chart)
         else:
             st.warning(f"No open interest data available for {oi_asset}.")
+        
+        # 5. Funding Rates Analysis Tables
+        st.header("Funding Rates Analysis")
+        
+        # Create filter controls for funding rate tables
+        filter_col1, filter_col2 = st.columns(2)
+        
+        with filter_col1:
+            # Get all available assets from the data
+            all_assets = []
+            if 'current_funding_rates' in data and data['current_funding_rates'] is not None:
+                # Check if 'symbol' column exists
+                if 'symbol' in data['current_funding_rates'].columns:
+                    all_assets = sorted(data['current_funding_rates']['symbol'].unique().tolist())
+                else:
+                    # Log available columns for debugging
+                    logger.warning(f"Expected 'symbol' column not found. Available columns: {data['current_funding_rates'].columns.tolist()}")
+                    # Try to find the first column that might contain symbols
+                    first_col = data['current_funding_rates'].columns[0]
+                    all_assets = sorted(data['current_funding_rates'][first_col].unique().tolist())
+            
+            # Multi-select for assets (default to top 20)
+            default_assets = all_assets[:20] if len(all_assets) > 20 else all_assets
+            selected_assets = st.multiselect(
+                "Select Assets",
+                options=all_assets,
+                default=default_assets,
+                key="funding_assets"
+            )
+        
+        with filter_col2:
+            # Get all available exchanges from stablecoin margin data
+            all_exchanges = set()
+            if 'current_funding_rates' in data and data['current_funding_rates'] is not None:
+                for idx, row in data['current_funding_rates'].iterrows():
+                    if 'stablecoin_margin_list' in row and isinstance(row['stablecoin_margin_list'], (list, np.ndarray)):
+                        for exchange_data in row['stablecoin_margin_list']:
+                            if isinstance(exchange_data, dict) and 'exchange' in exchange_data:
+                                all_exchanges.add(exchange_data['exchange'])
+            
+            all_exchanges = sorted(list(all_exchanges))
+            selected_exchanges = st.multiselect(
+                "Select Exchanges",
+                options=all_exchanges,
+                default=all_exchanges[:10] if len(all_exchanges) > 10 else all_exchanges,
+                key="funding_exchanges"
+            )
+        
+        # No longer need filter_col3, just set margin_type to stablecoin
+        margin_type = 'stablecoin'  # Fixed to stablecoin margin only
+        
+        # Rate display type selector (only for current rates)
+        rate_display_col1, rate_display_col2 = st.columns([1, 3])
+        with rate_display_col1:
+            rate_display = st.radio(
+                "Rate Display",
+                options=['annualized', 'current'],
+                format_func=lambda x: 'Annualized (Default)' if x == 'annualized' else 'Current Rate',
+                horizontal=True,
+                key="funding_rate_display"
+            )
+        
+        # Current Funding Rates Table
+        st.subheader("Current Funding Rates (Live)")
+        
+        if rate_display == 'annualized':
+            st.caption("Showing annualized rates calculated as: Current Rate × (24 / Funding Interval) × 365")
+        else:
+            st.caption("Showing raw current funding rates as provided by exchanges")
+        
+        current_df = prepare_current_funding_rate_table(
+            data,
+            selected_assets=selected_assets if selected_assets else None,
+            selected_exchanges=selected_exchanges if selected_exchanges else None,
+            rate_display=rate_display
+        )
+        
+        if not current_df.empty:
+            # Create format dictionary for the table
+            format_dict = {}
+            for col in current_df.columns:
+                if col != 'Asset':
+                    if rate_display == 'annualized':
+                        # Format as percentage with 2 decimal places for annualized
+                        format_dict[col] = lambda x: format_percentage(x, precision=2, show_plus=True) if pd.notnull(x) else 'N/A'
+                    else:
+                        # Format as percentage with 4 decimal places for current rates
+                        format_dict[col] = lambda x: format_percentage(x, precision=4, show_plus=True) if pd.notnull(x) else 'N/A'
+            
+            create_formatted_table(
+                current_df,
+                format_dict=format_dict,
+                emphasize_negatives=True,
+                compact_display=True
+            )
+        else:
+            st.info("No current funding rate data available for the selected filters.")
+        
+        # Accumulated Funding Rates Table
+        st.subheader("Accumulated Funding Rates (365 Days)")
+        st.caption("Total funding accumulated over the past year (365 days)")
+        
+        accumulated_df = prepare_accumulated_funding_rate_table(
+            data,
+            selected_assets=selected_assets if selected_assets else None,
+            selected_exchanges=selected_exchanges if selected_exchanges else None
+        )
+        
+        if not accumulated_df.empty:
+            # Create format dictionary for the table
+            format_dict = {}
+            for col in accumulated_df.columns:
+                if col != 'Asset':
+                    # Format as percentage with 2 decimal places
+                    format_dict[col] = lambda x: format_percentage(x, precision=2, show_plus=True) if pd.notnull(x) else 'N/A'
+            
+            # Apply special styling to the Average row
+            def style_average_row(styler):
+                # Find the index of the Average row
+                avg_idx = accumulated_df[accumulated_df['Asset'] == 'Average'].index
+                if not avg_idx.empty:
+                    # Apply bold font to the Average row
+                    styler = styler.set_properties(
+                        subset=pd.IndexSlice[avg_idx, :],
+                        **{'font-weight': 'bold', 'background-color': '#f0f0f0'}
+                    )
+                return styler
+            
+            # Create the table
+            styled_table = create_formatted_table(
+                accumulated_df,
+                format_dict=format_dict,
+                emphasize_negatives=True,
+                compact_display=True
+            )
+            
+            # Note about the data
+            st.caption("Note: The 'Average' row shows the mean accumulated funding rate across all displayed assets for each exchange.")
+        else:
+            st.info("No accumulated funding rate data available for the selected filters.")
 
 if __name__ == "__main__":
     main()

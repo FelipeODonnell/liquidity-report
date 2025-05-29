@@ -59,13 +59,10 @@ import os
 import sys
 import logging
 
-# Configure logging
 logger = logging.getLogger(__name__)
 
-# Add parent directory to path to import from components and utils
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
-# Import components and utilities
 from components.sidebar import render_sidebar
 from components.metrics import display_metrics_row, display_metric_card
 from components.charts import (
@@ -95,7 +92,6 @@ from utils.formatters import (
 )
 from utils.config import APP_TITLE, APP_ICON, SUPPORTED_ASSETS
 
-# Set page config with title and icon
 st.set_page_config(
     page_title=f"{APP_TITLE} - Report",
     page_icon=APP_ICON,
@@ -103,7 +99,6 @@ st.set_page_config(
     initial_sidebar_state="expanded"
 )
 
-# Set the current page for sidebar navigation
 st.session_state.current_page = 'report'
 
 def load_report_data():
@@ -117,14 +112,12 @@ def load_report_data():
     """
     data = {}
     
-    # Get the latest data directory
     latest_dir = get_latest_data_directory()
     
     if not latest_dir:
         st.error("No data directories found. Please check your data path.")
         return data
     
-    # Load spot market data for BTC, ETH, SOL, XRP
     spot_data = {}
     for asset in SUPPORTED_ASSETS[:4]:  # BTC, ETH, SOL, XRP
         spot_asset_data = load_data_for_category('spot', 'spot_market', asset, latest_dir)
@@ -133,7 +126,6 @@ def load_report_data():
     
     data['spot'] = spot_data
     
-    # Load futures market data
     futures_data = {}
     for asset in SUPPORTED_ASSETS[:4]:  # BTC, ETH, SOL, XRP
         futures_asset_data = load_data_for_category('futures', 'market', asset, latest_dir)
@@ -142,7 +134,6 @@ def load_report_data():
     
     data['futures'] = futures_data
     
-    # Load funding rate data
     funding_rate_data = {}
     for asset in SUPPORTED_ASSETS[:4]:  # BTC, ETH, SOL, XRP
         funding_asset_data = load_data_for_category('futures', 'funding_rate', asset, latest_dir)
@@ -151,7 +142,6 @@ def load_report_data():
     
     data['funding_rate'] = funding_rate_data
     
-    # Load open interest data
     open_interest_data = {}
     for asset in SUPPORTED_ASSETS[:4]:  # BTC, ETH, SOL, XRP
         oi_asset_data = load_data_for_category('futures', 'open_interest', asset, latest_dir)

@@ -13,13 +13,10 @@ import os
 import sys
 import logging
 
-# Configure logging
 logger = logging.getLogger(__name__)
 
-# Add parent directory to path to import from components and utils
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
-# Import components and utilities
 from components.sidebar import render_sidebar
 from components.metrics import display_metrics_row, display_metric_card
 from components.charts import (
@@ -48,7 +45,6 @@ from utils.formatters import (
 )
 from utils.config import APP_TITLE, APP_ICON
 
-# Set page config with title and icon
 st.set_page_config(
     page_title=f"{APP_TITLE} - ETFs",
     page_icon=APP_ICON,
@@ -56,7 +52,6 @@ st.set_page_config(
     initial_sidebar_state="expanded"
 )
 
-# Set the current page for sidebar navigation
 st.session_state.current_page = 'etf'
 
 def load_etf_data():

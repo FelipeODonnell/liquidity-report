@@ -28,7 +28,7 @@ CHART_COLORS = {
 # Exchange colors for consistent visualization
 EXCHANGE_COLORS = {
     "Binance": "#F0B90B", 
-    "OKX": "#121212",
+    "OKX": "#FFFFFF",
     "Bybit": "#FFBC00",
     "dYdX": "#6966FF",
     "Coinbase": "#0052FF",

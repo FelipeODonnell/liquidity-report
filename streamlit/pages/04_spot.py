@@ -319,32 +319,11 @@ def render_market_data_page(asset, all_selected_assets=None, selected_exchanges=
         st.header(f"Live Price Data: {asset_str}")
         logger.info(f"Rendering live price page for multiple assets: {asset_str}")
         
-    # Exchange selector
-    # Define available exchanges for spot market data
-    available_exchanges = ["Binance", "Coinbase", "Kraken", "OKX", "All"]
+    # Default to show all exchanges (no filter selector)
+    selected_exchanges = ["All"]
     
-    # Default to session state if it exists, otherwise use All
-    default_exchanges = selected_exchanges if selected_exchanges else ["All"]
-    
-    # Add exchange selector
-    exchange_col1, exchange_col2 = st.columns([3, 1])
-    with exchange_col1:
-        selected_exchanges = st.multiselect(
-            "Select Exchanges to Display",
-            available_exchanges,
-            default=default_exchanges,
-            key=f"spot_market_exchange_selector_{asset}"
-        )
-    
-    # Ensure at least one exchange is selected
-    if not selected_exchanges:
-        selected_exchanges = ["All"]
-        logger.warning("At least one exchange must be selected. Defaulting to 'All'.")
-    
-    # Store in session state for this section
+    # Store in session state for backward compatibility
     st.session_state.selected_spot_market_exchanges = selected_exchanges
-    
-    # For backward compatibility
     st.session_state.selected_exchanges = selected_exchanges
 
     # Load market data
@@ -1026,7 +1005,7 @@ def render_market_data_page(asset, all_selected_assets=None, selected_exchanges=
                                     # Create net flow chart
                                     fig = go.Figure()
                                     
-                                    colors = ['green' if x >= 0 else 'red' for x in buy_sell_df['net_flow']]
+                                    colors = ['#00FF00' if x >= 0 else '#FF0000' for x in buy_sell_df['net_flow']]
                                     
                                     fig.add_trace(go.Bar(
                                         x=buy_sell_df['exchange_name'],
@@ -1212,20 +1191,8 @@ def render_order_book_page(asset, all_selected_assets=None, selected_exchanges=N
     # Default to session state if it exists, otherwise use All
     default_exchanges = selected_exchanges if selected_exchanges else ["All"]
     
-    # Add exchange selector
-    exchange_col1, exchange_col2 = st.columns([3, 1])
-    with exchange_col1:
-        selected_exchanges = st.multiselect(
-            "Select Exchanges to Display",
-            available_exchanges,
-            default=default_exchanges,
-            key=f"spot_orderbook_exchange_selector_{asset}"
-        )
-    
-    # Ensure at least one exchange is selected
-    if not selected_exchanges:
-        selected_exchanges = ["All"]
-        logger.warning("At least one exchange must be selected. Defaulting to 'All'.")
+    # Set selected exchanges to default (All)
+    selected_exchanges = ["All"]
     
     # Store in session state for this section
     st.session_state.selected_spot_orderbook_exchanges = selected_exchanges
@@ -1371,14 +1338,14 @@ def render_order_book_page(asset, all_selected_assets=None, selected_exchanges=N
                     x=history_df['datetime'],
                     y=history_df[asks_col],
                     name='Asks Amount',
-                    line=dict(color='red')
+                    line=dict(color='red', width=1.5)
                 ))
                 
                 fig.add_trace(go.Scatter(
                     x=history_df['datetime'],
                     y=history_df[bids_col],
                     name='Bids Amount',
-                    line=dict(color='green')
+                    line=dict(color='green', width=1.5)
                 ))
                 
                 # Update layout
@@ -1482,14 +1449,14 @@ def render_order_book_page(asset, all_selected_assets=None, selected_exchanges=N
                             x=selected_df['datetime'],
                             y=selected_df[asks_col],
                             name='Asks Amount',
-                            line=dict(color='red')
+                            line=dict(color='red', width=1.5)
                         ))
                         
                         fig.add_trace(go.Scatter(
                             x=selected_df['datetime'],
                             y=selected_df[bids_col],
                             name='Bids Amount',
-                            line=dict(color='green')
+                            line=dict(color='green', width=1.5)
                         ))
                         
                         # Update layout
@@ -1558,20 +1525,8 @@ def render_taker_buy_sell_page(asset, all_selected_assets=None, selected_exchang
     # Default to session state if it exists, otherwise use All
     default_exchanges = selected_exchanges if selected_exchanges else ["All"]
     
-    # Add exchange selector
-    exchange_col1, exchange_col2 = st.columns([3, 1])
-    with exchange_col1:
-        selected_exchanges = st.multiselect(
-            "Select Exchanges to Display",
-            available_exchanges,
-            default=default_exchanges,
-            key=f"taker_buy_sell_exchange_selector_{asset}"
-        )
-    
-    # Ensure at least one exchange is selected
-    if not selected_exchanges:
-        selected_exchanges = ["All"]
-        logger.warning("At least one exchange must be selected. Defaulting to 'All'.")
+    # Set selected exchanges to default (All)
+    selected_exchanges = ["All"]
     
     # Store in session state for this section
     st.session_state.selected_taker_buy_sell_exchanges = selected_exchanges
@@ -1699,14 +1654,14 @@ def render_taker_buy_sell_page(asset, all_selected_assets=None, selected_exchang
                     x=history_df['datetime'],
                     y=history_df['buy_volume'],
                     name='Buy Volume',
-                    line=dict(color='green')
+                    line=dict(color='green', width=1.5)
                 ))
                 
                 fig.add_trace(go.Scatter(
                     x=history_df['datetime'],
                     y=history_df['sell_volume'],
                     name='Sell Volume',
-                    line=dict(color='red')
+                    line=dict(color='red', width=1.5)
                 ))
                 
                 # Update layout
@@ -1751,7 +1706,7 @@ def render_taker_buy_sell_page(asset, all_selected_assets=None, selected_exchang
                     y='net_flow',
                     title=f"{asset} Net Flow (Buy - Sell Volume)",
                     color='net_flow',
-                    color_continuous_scale=['red', 'green'],
+                    color_continuous_scale=['#FF0000', '#00FF00'],
                     color_continuous_midpoint=0
                 )
                 

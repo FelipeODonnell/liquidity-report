@@ -162,10 +162,6 @@ def main():
                     "value": total_us_spot_aum,
                     "delta": None
                 },
-                "24h Fund Flow": {
-                    "value": latest_flow,
-                    "delta": None
-                },
                 "7d Fund Flow": {
                     "value": last_7d_flow,
                     "delta": None
@@ -175,7 +171,6 @@ def main():
             formatters = {
                 "Total AUM": lambda x: format_currency(x, abbreviate=True),
                 "US Spot ETF AUM": lambda x: format_currency(x, abbreviate=True),
-                "24h Fund Flow": lambda x: format_currency(x, abbreviate=True),
                 "7d Fund Flow": lambda x: format_currency(x, abbreviate=True)
             }
             
@@ -184,8 +179,27 @@ def main():
             # Bitcoin ETF List
             st.subheader("Bitcoin ETF List")
             
-            # Sort by AUM
+            # Capitalize region column values
+            if 'region' in btc_etf_df.columns:
+                btc_etf_df['region'] = btc_etf_df['region'].str.upper()
+            
+            # Convert aum_usd to numeric for proper sorting
+            btc_etf_df['aum_usd'] = pd.to_numeric(btc_etf_df['aum_usd'], errors='coerce')
+            
+            # Sort by AUM (highest first)
             btc_etf_df = btc_etf_df.sort_values(by='aum_usd', ascending=False)
+            
+            # Create a copy with numeric values for the chart before formatting
+            btc_etf_chart_data = btc_etf_df.copy()
+            
+            # Format AUM USD values for display in table only
+            if 'aum_usd' in btc_etf_df.columns:
+                btc_etf_df['aum_usd_formatted'] = btc_etf_df['aum_usd'].apply(
+                    lambda x: f"${x:,.0f}" if pd.notnull(x) else "N/A"
+                )
+                # Replace the original column for display
+                btc_etf_df['aum_usd'] = btc_etf_df['aum_usd_formatted']
+                btc_etf_df = btc_etf_df.drop('aum_usd_formatted', axis=1)
             
             # Display table
             create_etf_table(btc_etf_df)
@@ -197,9 +211,8 @@ def main():
             # Import our enhanced chart utility
             from utils.chart_utils import create_enhanced_pie_chart
             
-            # Filter out any non-numeric or zero values
-            filtered_etfs = btc_etf_df.copy()
-            filtered_etfs['aum_usd'] = pd.to_numeric(filtered_etfs['aum_usd'], errors='coerce')
+            # Use the chart data with numeric values for the pie chart
+            filtered_etfs = btc_etf_chart_data.copy()
             filtered_etfs = filtered_etfs.dropna(subset=['aum_usd'])
             filtered_etfs = filtered_etfs[filtered_etfs['aum_usd'] > 0]
             
@@ -388,10 +401,6 @@ def main():
                     "value": total_us_spot_aum,
                     "delta": None
                 },
-                "24h Fund Flow": {
-                    "value": latest_flow,
-                    "delta": None
-                },
                 "7d Fund Flow": {
                     "value": last_7d_flow,
                     "delta": None
@@ -401,7 +410,6 @@ def main():
             formatters = {
                 "Total AUM": lambda x: format_currency(x, abbreviate=True),
                 "US Spot ETF AUM": lambda x: format_currency(x, abbreviate=True),
-                "24h Fund Flow": lambda x: format_currency(x, abbreviate=True) if x is not None else "N/A",
                 "7d Fund Flow": lambda x: format_currency(x, abbreviate=True) if x is not None else "N/A"
             }
             
@@ -410,8 +418,27 @@ def main():
             # Ethereum ETF List
             st.subheader("Ethereum ETF List")
             
-            # Sort by AUM
+            # Capitalize region column values
+            if 'region' in eth_etf_df.columns:
+                eth_etf_df['region'] = eth_etf_df['region'].str.upper()
+            
+            # Convert aum_usd to numeric for proper sorting
+            eth_etf_df['aum_usd'] = pd.to_numeric(eth_etf_df['aum_usd'], errors='coerce')
+            
+            # Sort by AUM (highest first)
             eth_etf_df = eth_etf_df.sort_values(by='aum_usd', ascending=False)
+            
+            # Create a copy with numeric values for the chart before formatting
+            eth_etf_chart_data = eth_etf_df.copy()
+            
+            # Format AUM USD values for display in table only
+            if 'aum_usd' in eth_etf_df.columns:
+                eth_etf_df['aum_usd_formatted'] = eth_etf_df['aum_usd'].apply(
+                    lambda x: f"${x:,.0f}" if pd.notnull(x) else "N/A"
+                )
+                # Replace the original column for display
+                eth_etf_df['aum_usd'] = eth_etf_df['aum_usd_formatted']
+                eth_etf_df = eth_etf_df.drop('aum_usd_formatted', axis=1)
             
             # Display table
             create_etf_table(eth_etf_df)
@@ -420,9 +447,8 @@ def main():
             st.subheader("Assets Under Management")
             
             # Create pie chart for AUM distribution with improved formatting
-            # Filter out any non-numeric or zero values
-            filtered_eth_etfs = eth_etf_df.copy()
-            filtered_eth_etfs['aum_usd'] = pd.to_numeric(filtered_eth_etfs['aum_usd'], errors='coerce')
+            # Use the chart data with numeric values for the pie chart
+            filtered_eth_etfs = eth_etf_chart_data.copy()
             filtered_eth_etfs = filtered_eth_etfs.dropna(subset=['aum_usd'])
             filtered_eth_etfs = filtered_eth_etfs[filtered_eth_etfs['aum_usd'] > 0]
             

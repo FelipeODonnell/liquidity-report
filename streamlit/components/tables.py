@@ -562,10 +562,10 @@ def create_etf_table(df, format_column_names=True):
                 format="%.2f%%"
             )
         elif col == 'aum_usd':
-            column_config[col] = st.column_config.NumberColumn(
+            column_config[col] = st.column_config.TextColumn(
                 formatted_name,
                 help="Assets Under Management in USD",
-                format="$%.2f"
+                width="medium"
             )
         elif col == 'management_fee_percent':
             column_config[col] = st.column_config.NumberColumn(

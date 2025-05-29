@@ -101,32 +101,11 @@ def render_options_info(data, asset, all_selected_assets=None, selected_exchange
     """
     st.header(f"{asset} Options Market Overview")
     
-    # Exchange selector
-    # Define available exchanges for options market data
-    available_exchanges = ["Deribit", "OKX", "Binance", "All"]
+    # Default to show all exchanges (no filter selector)
+    selected_exchanges = ["All"]
     
-    # Default to session state if it exists, otherwise use All
-    default_exchanges = selected_exchanges if selected_exchanges else ["All"]
-    
-    # Add exchange selector
-    exchange_col1, exchange_col2 = st.columns([3, 1])
-    with exchange_col1:
-        selected_exchanges = st.multiselect(
-            "Select Exchanges to Display",
-            available_exchanges,
-            default=default_exchanges,
-            key=f"options_info_exchange_selector_{asset}"
-        )
-    
-    # Ensure at least one exchange is selected
-    if not selected_exchanges:
-        selected_exchanges = ["All"]
-        st.warning("At least one exchange must be selected. Defaulting to 'All'.")
-    
-    # Store in session state for this section
+    # Store in session state for backward compatibility
     st.session_state.selected_options_info_exchanges = selected_exchanges
-    
-    # For backward compatibility
     st.session_state.selected_exchanges = selected_exchanges
 
     # Options info data - try different possible key formats
@@ -157,6 +136,10 @@ def render_options_info(data, asset, all_selected_assets=None, selected_exchange
             # Filter by selected exchanges if needed (if not "All")
             if 'exchange_name' in options_df.columns and selected_exchanges and "All" not in selected_exchanges:
                 options_df = options_df[options_df['exchange_name'].isin(selected_exchanges)]
+            
+            # Exclude the 'All' row from the data as it's not relevant and skews the stats
+            if 'exchange_name' in options_df.columns:
+                options_df = options_df[~options_df['exchange_name'].str.lower().isin(['all', 'ALL', 'All'])]
 
             # Check if we have the key metrics
             has_oi = any(col in options_df.columns for col in ['open_interest', 'open_interest_usd'])
@@ -221,8 +204,7 @@ def render_options_info(data, asset, all_selected_assets=None, selected_exchange
                 display_cols.append('volume_usd_24h')
             if 'open_interest_change_24h' in options_df.columns:
                 display_cols.append('open_interest_change_24h')
-            if 'volume_change_percent_24h' in options_df.columns:
-                display_cols.append('volume_change_percent_24h')
+            # Removed 'volume_change_percent_24h' column
 
             # Create a display dataframe with selected columns
             if len(display_cols) > 1:  # Need at least exchange_name plus one more column
@@ -235,8 +217,7 @@ def render_options_info(data, asset, all_selected_assets=None, selected_exchange
                     'open_interest_usd': 'Open Interest (USD)',
                     'oi_market_share': 'Market Share (%)',
                     'volume_usd_24h': '24h Volume (USD)',
-                    'open_interest_change_24h': '24h OI Change (%)',
-                    'volume_change_percent_24h': '24h Volume Change (%)'
+                    'open_interest_change_24h': '24h OI Change (%)'
                 }
 
                 # Apply renaming for columns that exist
@@ -255,8 +236,6 @@ def render_options_info(data, asset, all_selected_assets=None, selected_exchange
                     format_dict['24h Volume (USD)'] = lambda x: format_currency(x, abbreviate=True, show_decimals=False)
                 if '24h OI Change (%)' in display_df.columns:
                     format_dict['24h OI Change (%)'] = lambda x: format_percentage(x, precision=2)
-                if '24h Volume Change (%)' in display_df.columns:
-                    format_dict['24h Volume Change (%)'] = lambda x: format_percentage(x, precision=2)
 
                 # Create and display the table
                 create_formatted_table(display_df, format_dict=format_dict)
@@ -333,32 +312,11 @@ def render_max_pain(data, asset, all_selected_assets=None, selected_exchanges=No
     """
     st.header(f"{asset} Options Max Pain")
     
-    # Exchange selector
-    # Define available exchanges for options max pain
-    available_exchanges = ["Deribit", "OKX", "Binance", "All"]
+    # Default to show all exchanges (no filter selector)
+    selected_exchanges = ["All"]
     
-    # Default to session state if it exists, otherwise use All
-    default_exchanges = selected_exchanges if selected_exchanges else ["All"]
-    
-    # Add exchange selector
-    exchange_col1, exchange_col2 = st.columns([3, 1])
-    with exchange_col1:
-        selected_exchanges = st.multiselect(
-            "Select Exchanges to Display",
-            available_exchanges,
-            default=default_exchanges,
-            key=f"options_max_pain_exchange_selector_{asset}"
-        )
-    
-    # Ensure at least one exchange is selected
-    if not selected_exchanges:
-        selected_exchanges = ["All"]
-        st.warning("At least one exchange must be selected. Defaulting to 'All'.")
-    
-    # Store in session state for this section
+    # Store in session state for backward compatibility
     st.session_state.selected_max_pain_exchanges = selected_exchanges
-    
-    # For backward compatibility
     st.session_state.selected_exchanges = selected_exchanges
 
     # Max pain data - try different possible key formats

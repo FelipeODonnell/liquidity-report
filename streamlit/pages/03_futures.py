@@ -1238,8 +1238,6 @@ def render_liquidation_page(asset, all_selected_assets=None, selected_exchanges=
         except Exception as e:
             logger.error(f"Error processing liquidation orders: {e}")
             st.error(f"Error processing liquidation orders: {e}")
-    else:
-        st.info("Binance exchange data shown.")
 
 def render_open_interest_page(asset, all_selected_assets=None, selected_exchanges=None, selected_time_range=None):
     """Render the open interest page for the specified asset and selected exchanges.
@@ -1325,6 +1323,10 @@ def render_open_interest_page(asset, all_selected_assets=None, selected_exchange
         if column_mapping:
             oi_exchange_df = oi_exchange_df.rename(columns=column_mapping)
             
+        # Exclude the 'all' row first to get accurate totals
+        if 'exchange_name' in oi_exchange_df.columns:
+            oi_exchange_df = oi_exchange_df[~oi_exchange_df['exchange_name'].str.lower().isin(['all', 'ALL', 'All'])]
+            
         # Filter by selected exchanges if needed (if not "All")
         if 'exchange_name' in oi_exchange_df.columns and selected_exchanges and "All" not in selected_exchanges:
             oi_exchange_df = oi_exchange_df[oi_exchange_df['exchange_name'].isin(selected_exchanges)]
@@ -1354,14 +1356,6 @@ def render_open_interest_page(asset, all_selected_assets=None, selected_exchange
 
             # Open interest by exchange
             st.subheader(f"{asset} Open Interest by Exchange")
-
-            # Exclude the 'all' row as requested
-            oi_exchange_df = oi_exchange_df[~oi_exchange_df['exchange_name'].str.lower().isin(['all', 'ALL', 'All'])]
-            
-            # Recalculate market share percentages after excluding 'all' row
-            if 'market_share_percent' in oi_exchange_df.columns:
-                total_oi = oi_exchange_df['open_interest_usd'].sum()
-                oi_exchange_df['market_share_percent'] = (oi_exchange_df['open_interest_usd'] / total_oi * 100)
             
             # Sort by open interest
             oi_exchange_df = oi_exchange_df.sort_values(by='open_interest_usd', ascending=False)
@@ -1371,20 +1365,20 @@ def render_open_interest_page(asset, all_selected_assets=None, selected_exchange
             if 'market_share_percent' in oi_exchange_df.columns:
                 display_columns.append('market_share_percent')
 
-            # Add change columns if they exist
+            # Add only 1h and 24h change columns if they exist
             for col in oi_exchange_df.columns:
-                if 'change_percent' in col:
+                if 'change_percent' in col and ('1h' in col.lower() or '24h' in col.lower()):
                     display_columns.append(col)
 
             # Create format dictionary based on available columns
             format_dict = {'open_interest_usd': lambda x: format_currency(x, abbreviate=True)}
             if 'market_share_percent' in oi_exchange_df.columns:
-                format_dict['market_share_percent'] = lambda x: format_percentage(x)
+                format_dict['market_share_percent'] = lambda x: f"{x:.2f}%" if pd.notnull(x) else 'N/A'
 
-            # Add formatters for change columns
+            # Add formatters for change columns (values already in percentage, don't multiply by 100)
             for col in display_columns:
                 if 'change_percent' in col:
-                    format_dict[col] = lambda x: format_percentage(x)
+                    format_dict[col] = lambda x: f"{x:.2f}%" if pd.notnull(x) else 'N/A'
 
             # Create table with available columns
             create_formatted_table(
@@ -2014,7 +2008,7 @@ def render_market_data_page(asset, all_selected_assets=None, selected_exchanges=
             logger.error(f"Error processing price history data: {e}")
             st.error(f"Error processing price data: {e}")
     else:
-        st.info(f"Limited API data for {asset}.")
+        st.info(f"Limited API data.")
 
     # Trading pairs data - try multiple possible key formats
     pairs_df = None
@@ -2097,7 +2091,7 @@ def render_market_data_page(asset, all_selected_assets=None, selected_exchanges=
                     format_dict['current_price'] = lambda x: format_currency(x, precision=2) if pd.notna(x) else "N/A"
 
                 if 'price_change_percent_24h' in display_columns:
-                    format_dict['price_change_percent_24h'] = lambda x: format_percentage(x) if pd.notna(x) else "N/A"
+                    format_dict['price_change_percent_24h'] = lambda x: f"{x:.2f}%" if pd.notna(x) else "N/A"
 
                 if 'volume_24h_usd' in display_columns:
                     format_dict['volume_24h_usd'] = lambda x: format_currency(x, abbreviate=True) if pd.notna(x) else "N/A"
@@ -2106,7 +2100,7 @@ def render_market_data_page(asset, all_selected_assets=None, selected_exchanges=
                     format_dict['open_interest_usd'] = lambda x: format_currency(x, abbreviate=True) if pd.notna(x) else "N/A"
 
                 if 'funding_rate' in display_columns:
-                    format_dict['funding_rate'] = lambda x: format_percentage(x * 100) if pd.notna(x) else "N/A"
+                    format_dict['funding_rate'] = lambda x: f"{x:.4f}%" if pd.notna(x) else "N/A"
 
                 # Create table with available columns
                 if display_columns:

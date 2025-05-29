@@ -104,11 +104,11 @@ def load_basis_data():
             data['current_funding_rates'] = pd.read_parquet(current_funding_file)
             logger.info(f"Loaded current funding rates: {len(data['current_funding_rates'])} rows")
         
-        # Accumulated funding rates
-        accumulated_funding_file = os.path.join(data_path, 'futures', 'funding_rate', 'api_futures_fundingRate_accumulated_exchange_list.parquet')
+        # Accumulated funding rates (365d - maintains backward compatibility)
+        accumulated_funding_file = os.path.join(data_path, 'futures', 'funding_rate', 'api_futures_fundingRate_accumulated_exchange_list_365d.parquet')
         if os.path.exists(accumulated_funding_file):
             data['accumulated_funding_rates'] = pd.read_parquet(accumulated_funding_file)
-            logger.info(f"Loaded accumulated funding rates: {len(data['accumulated_funding_rates'])} rows")
+            logger.info(f"Loaded 365d accumulated funding rates: {len(data['accumulated_funding_rates'])} rows")
         
         # Load spot price data for top 10 assets
         spot_data = {}
@@ -216,6 +216,217 @@ def calculate_annualized_rate(current_rate, interval_hours):
     except Exception as e:
         logger.error(f"Error calculating annualized rate: {e}")
         return None
+
+def load_all_accumulated_funding_data(data_path):
+    """
+    Load accumulated funding rate data for all time periods.
+    
+    Parameters:
+    -----------
+    data_path : str
+        Path to the data directory
+    
+    Returns:
+    --------
+    dict
+        Dictionary with {period: DataFrame} for each time period
+    """
+    import json
+    
+    periods = ['1d', '7d', '30d', '365d']
+    funding_data = {}
+    
+    for period in periods:
+        file_path = os.path.join(
+            data_path, 
+            'futures', 
+            'funding_rate', 
+            f'api_futures_fundingRate_accumulated_exchange_list_{period}.parquet'
+        )
+        
+        if os.path.exists(file_path):
+            funding_data[period] = pd.read_parquet(file_path)
+            logger.info(f"Loaded {period} accumulated funding rates: {len(funding_data[period])} rows")
+        else:
+            logger.warning(f"File not found: {file_path}")
+            funding_data[period] = pd.DataFrame()
+    
+    return funding_data
+
+def annualize_funding_rate(rate, period):
+    """
+    Convert accumulated funding rate to annualized rate.
+    
+    Parameters:
+    -----------
+    rate : float
+        Accumulated funding rate (as decimal, e.g., 0.0689 for 6.89%)
+    period : str
+        Time period ('1d', '7d', '30d', '365d')
+    
+    Returns:
+    --------
+    float
+        Annualized rate as percentage
+    """
+    multipliers = {
+        '1d': 365,      # Daily to annual
+        '7d': 52.14,    # Weekly to annual (365/7)
+        '30d': 12.17,   # Monthly to annual (365/30)
+        '365d': 1       # Already annual
+    }
+    
+    return rate * multipliers.get(period, 1) * 100
+
+def prepare_comprehensive_funding_rate_table(funding_data_dict):
+    """
+    Create comprehensive table showing annualized funding rates across all time periods.
+    Only includes top 20 crypto assets by market cap.
+    
+    Parameters:
+    -----------
+    funding_data_dict : dict
+        Dictionary with DataFrames for each period
+        
+    Returns:
+    --------
+    pandas.DataFrame
+        Formatted table with annualized rates
+    """
+    import json
+    
+    if not funding_data_dict:
+        return pd.DataFrame()
+    
+    # Define top 20 crypto assets to filter for
+    TOP_20_ASSETS = [
+        'BTC', 'ETH', 'USDT', 'XRP', 'BNB', 'SOL', 'USDC', 'DOGE', 'ADA', 'TRX',
+        'WBTC', 'SUI', 'LINK', 'AVAX', 'SHIB', 'LEO', 'BCH', 'XLM', 'HBAR', 'TON'
+    ]
+    
+    all_rows = []
+    
+    # Process each asset across all time periods
+    for period, df in funding_data_dict.items():
+        if df.empty:
+            continue
+            
+        for _, row in df.iterrows():
+            symbol = row['symbol']
+            
+            # Only process top 20 crypto assets
+            if symbol not in TOP_20_ASSETS:
+                continue
+            
+            # Process stablecoin margin exchanges
+            stablecoin_data = row.get('stablecoin_margin_list')
+            if stablecoin_data is not None and len(stablecoin_data) > 0:
+                try:
+                    # Handle both string (JSON) and list formats
+                    if isinstance(stablecoin_data, str):
+                        exchange_list = json.loads(stablecoin_data)
+                    else:
+                        exchange_list = stablecoin_data
+                    
+                    # Process each exchange in the list
+                    for exchange_info in exchange_list:
+                        if isinstance(exchange_info, dict) and 'exchange' in exchange_info and 'funding_rate' in exchange_info:
+                            try:
+                                exchange = exchange_info['exchange']
+                                funding_rate_value = exchange_info['funding_rate']
+                                
+                                # Skip if funding_rate is None or empty
+                                if funding_rate_value is None or funding_rate_value == '':
+                                    continue
+                                    
+                                rate = float(funding_rate_value)  # Already a decimal
+                                
+                                # Annualize the rate
+                                annualized_rate = annualize_funding_rate(rate, period)
+                                
+                                all_rows.append({
+                                    'Asset': symbol,
+                                    'Exchange': exchange,
+                                    'Period': period,
+                                    'Accumulated Rate (%)': f"{rate * 100:.2f}%",
+                                    'Annualized Rate (%)': f"{annualized_rate:.2f}%",
+                                    'Raw Rate': rate,
+                                    'Raw Annualized': annualized_rate
+                                })
+                            except (ValueError, KeyError) as e:
+                                logger.warning(f"Error processing exchange data for {symbol}-{period}: {e}")
+                                
+                except (json.JSONDecodeError, TypeError) as e:
+                    logger.warning(f"Error parsing stablecoin margin data for {symbol}-{period}: {e}")
+            
+            # Also process token margin exchanges if available
+            token_data = row.get('token_margin_list')
+            if token_data is not None and len(token_data) > 0:
+                try:
+                    # Handle both string (JSON) and list formats
+                    if isinstance(token_data, str):
+                        exchange_list = json.loads(token_data)
+                    else:
+                        exchange_list = token_data
+                    
+                    # Process each exchange in the list
+                    for exchange_info in exchange_list:
+                        if isinstance(exchange_info, dict) and 'exchange' in exchange_info and 'funding_rate' in exchange_info:
+                            try:
+                                exchange = f"{exchange_info['exchange']}_TOKEN"  # Distinguish from stablecoin
+                                funding_rate_value = exchange_info['funding_rate']
+                                
+                                # Skip if funding_rate is None or empty
+                                if funding_rate_value is None or funding_rate_value == '':
+                                    continue
+                                    
+                                rate = float(funding_rate_value)  # Already a decimal
+                                
+                                # Annualize the rate
+                                annualized_rate = annualize_funding_rate(rate, period)
+                                
+                                all_rows.append({
+                                    'Asset': symbol,
+                                    'Exchange': exchange,
+                                    'Period': period,
+                                    'Accumulated Rate (%)': f"{rate * 100:.2f}%",
+                                    'Annualized Rate (%)': f"{annualized_rate:.2f}%",
+                                    'Raw Rate': rate,
+                                    'Raw Annualized': annualized_rate
+                                })
+                            except (ValueError, KeyError) as e:
+                                logger.warning(f"Error processing token exchange data for {symbol}-{period}: {e}")
+                                
+                except (json.JSONDecodeError, TypeError) as e:
+                    logger.warning(f"Error parsing token margin data for {symbol}-{period}: {e}")
+    
+    if not all_rows:
+        return pd.DataFrame()
+    
+    # Create DataFrame
+    result_df = pd.DataFrame(all_rows)
+    
+    # Pivot to show periods as columns
+    pivot_df = result_df.pivot_table(
+        index=['Asset', 'Exchange'],
+        columns='Period',
+        values='Raw Annualized',
+        aggfunc='first'
+    ).reset_index()
+    
+    # Format columns
+    period_columns = ['1d', '7d', '30d', '365d']
+    for col in period_columns:
+        if col in pivot_df.columns:
+            pivot_df[f'{col} Annualized (%)'] = pivot_df[col].apply(lambda x: f"{x:.2f}%" if pd.notna(x) else "N/A")
+    
+    # Select and order final columns
+    final_columns = ['Asset', 'Exchange']
+    for period in period_columns:
+        if f'{period} Annualized (%)' in pivot_df.columns:
+            final_columns.append(f'{period} Annualized (%)')
+    
+    return pivot_df[final_columns]
 
 def calculate_basis_trade_metrics(asset, spot_price, futures_price, funding_rate, interval_hours=8):
     """
@@ -1394,6 +1605,131 @@ def main():
         """)
     else:
         st.info("No accumulated funding rate data available for the selected filters.")
+    
+    # Comprehensive Funding Rate Analysis
+    st.header("📊 Comprehensive Funding Rate Analysis")
+    st.write("Annualized funding rates across different time periods for top 20 crypto assets by market cap.")
+    
+    # Get data path for comprehensive analysis
+    if not latest_dir.startswith('data'):
+        comprehensive_data_path = os.path.join('data', latest_dir)
+    else:
+        comprehensive_data_path = latest_dir
+    
+    # Load comprehensive funding data
+    comprehensive_funding_data = load_all_accumulated_funding_data(comprehensive_data_path)
+    
+    if any(not df.empty for df in comprehensive_funding_data.values()):
+        # Display which periods have data
+        available_periods = [period for period, df in comprehensive_funding_data.items() if not df.empty]
+        st.info(f"📈 Available data periods: {', '.join(available_periods)}")
+        
+        # Period selector
+        comp_col1, comp_col2 = st.columns([2, 1])
+        
+        with comp_col1:
+            display_mode = st.radio(
+                "Display Mode:",
+                ["Summary View", "Detailed View"],
+                horizontal=True,
+                help="Summary shows top 20 entries by annualized rates. Detailed shows all top 20 crypto assets.",
+                key="comp_display_mode"
+            )
+        
+        with comp_col2:
+            sort_period = st.selectbox(
+                "Sort by Period:",
+                ["365d", "30d", "7d", "1d"],
+                help="Choose which time period to use for sorting",
+                key="comp_sort_period"
+            )
+        
+        # Create comprehensive table
+        with st.spinner("Processing comprehensive funding data..."):
+            comprehensive_table = prepare_comprehensive_funding_rate_table(comprehensive_funding_data)
+        
+        if not comprehensive_table.empty:
+            # Apply filtering based on display mode
+            if display_mode == "Summary View":
+                # Show top 20 by selected period
+                sort_col = f'{sort_period} Annualized (%)'
+                if sort_col in comprehensive_table.columns:
+                    # Convert percentage strings to numeric for sorting
+                    comprehensive_table['sort_value'] = comprehensive_table[sort_col].str.replace('%', '').str.replace('N/A', '0').astype(float)
+                    display_table = comprehensive_table.nlargest(20, 'sort_value').drop('sort_value', axis=1)
+                else:
+                    display_table = comprehensive_table.head(20)
+                    st.warning(f"Sort column '{sort_col}' not found. Showing first 20 rows.")
+            else:
+                display_table = comprehensive_table
+            
+            # Format the table for display
+            format_dict = {}
+            for col in display_table.columns:
+                if 'Annualized (%)' in col:
+                    format_dict[col] = lambda x: x  # Already formatted as percentage strings
+            
+            st.subheader(f"Funding Rate Analysis - {display_mode}")
+            create_formatted_table(
+                display_table,
+                format_dict=format_dict
+            )
+            
+            # Add insights
+            st.markdown("**💡 Key Insights:**")
+            
+            # Calculate some statistics
+            insights = []
+            for period in ['1d', '7d', '30d', '365d']:
+                col_name = f'{period} Annualized (%)'
+                if col_name in comprehensive_table.columns:
+                    # Extract numeric values for analysis
+                    numeric_values = comprehensive_table[col_name].str.replace('%', '').str.replace('N/A', '').replace('', np.nan)
+                    numeric_values = pd.to_numeric(numeric_values, errors='coerce').dropna()
+                    
+                    if not numeric_values.empty:
+                        avg_rate = numeric_values.mean()
+                        max_rate = numeric_values.max()
+                        max_asset_exchange = comprehensive_table.loc[
+                            comprehensive_table[col_name] == f"{max_rate:.2f}%", 
+                            ['Asset', 'Exchange']
+                        ]
+                        
+                        if not max_asset_exchange.empty:
+                            asset = max_asset_exchange.iloc[0]['Asset']
+                            exchange = max_asset_exchange.iloc[0]['Exchange']
+                            insights.append(f"**{period} Period**: Average annualized rate: {avg_rate:.2f}%, Highest: {max_rate:.2f}% ({asset} on {exchange})")
+            
+            for insight in insights:
+                st.write(f"- {insight}")
+            
+            # Add download functionality
+            if not comprehensive_table.empty:
+                csv_data = comprehensive_table.to_csv(index=False)
+                st.download_button(
+                    label="📥 Download Comprehensive Funding Rate Data (CSV)",
+                    data=csv_data,
+                    file_name=f"comprehensive_funding_rates_{datetime.now().strftime('%Y%m%d')}.csv",
+                    mime="text/csv",
+                    key="download_comprehensive_funding"
+                )
+            
+            # Explanation section
+            st.markdown("""
+            **📋 Understanding Annualized Funding Rates:**
+            - **Asset Filter**: Only shows top 20 crypto assets by market cap (BTC, ETH, USDT, XRP, etc.)
+            - **1d Period**: Daily accumulated rate × 365 = Annual equivalent
+            - **7d Period**: Weekly accumulated rate × 52.14 = Annual equivalent  
+            - **30d Period**: Monthly accumulated rate × 12.17 = Annual equivalent
+            - **365d Period**: Already represents the full annual accumulated rate
+            - All rates are displayed as annualized percentages for easy comparison
+            - Higher values indicate more profitable funding collection opportunities
+            - Consider both rate magnitude and consistency across time periods
+            """)
+        else:
+            st.warning("No comprehensive funding rate data could be processed.")
+    else:
+        st.warning("No accumulated funding rate data found for any time period.")
     
     # Carry Trade Calculator
     st.header("Carry Trade Calculator")

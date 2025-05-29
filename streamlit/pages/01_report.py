@@ -160,6 +160,13 @@ def load_report_data():
     
     data['open_interest'] = open_interest_data
     
+    # Load futures volume data for each asset
+    for asset in SUPPORTED_ASSETS[:4]:  # BTC, ETH, SOL, XRP
+        volume_key = f'futures_volume_{asset}'
+        volume_file = f'api_futures_taker_buy_sell_volume_history_{asset}'
+        volume_data = load_specific_data_file('futures', volume_file, latest_dir, 'taker_buy_sell')
+        if volume_data is not None and not volume_data.empty:
+            data[volume_key] = volume_data
     
     return data
 
@@ -483,6 +490,215 @@ def prepare_open_interest_chart_data(data, asset='BTC', timeframe='24h'):
                 
     return result_df
 
+def prepare_price_volume_combined_data(data, asset='BTC', timeframe='24h'):
+    """
+    Prepare combined spot price and futures volume data for chart display.
+    
+    Parameters:
+    -----------
+    data : dict
+        The loaded data dictionary
+    asset : str
+        Specific asset like 'BTC', 'ETH', 'SOL', 'XRP'
+    timeframe : str
+        '24h', '7d', or '30d'
+    
+    Returns:
+    --------
+    pandas.DataFrame
+        DataFrame with columns: datetime, price, total_volume, buy_volume, sell_volume
+    """
+    result_df = None
+    
+    try:
+        # Get spot price data
+        spot_df = None
+        if 'spot' in data and asset in data['spot']:
+            spot_price_key = f'api_spot_price_history_{asset}'
+            if spot_price_key in data['spot'][asset]:
+                spot_df = data['spot'][asset][spot_price_key].copy()
+                spot_df = process_timestamps(spot_df)
+                
+                # Check if datetime column was created
+                if 'datetime' not in spot_df.columns:
+                    logger.warning(f"No datetime column after process_timestamps for {asset} spot data. Columns: {list(spot_df.columns)}")
+                    # Try to find a timestamp column and convert it
+                    if 'timestamp' in spot_df.columns:
+                        spot_df['datetime'] = pd.to_datetime(spot_df['timestamp'], unit='ms')
+                    elif 'time' in spot_df.columns:
+                        spot_df['datetime'] = pd.to_datetime(spot_df['time'], unit='ms')
+                    else:
+                        logger.error(f"No timestamp column found for {asset} spot data")
+                        return None
+                
+                if not spot_df.empty and 'close' in spot_df.columns and 'datetime' in spot_df.columns:
+                    spot_df = spot_df.sort_values('datetime')
+                    spot_df['price'] = spot_df['close']
+        
+        # Get futures volume data
+        volume_df = None
+        volume_key = f'futures_volume_{asset}'
+        if volume_key in data and data[volume_key] is not None:
+            volume_df = data[volume_key].copy()
+            
+            # Process timestamps to add datetime column
+            volume_df = process_timestamps(volume_df, timestamp_col='time')
+            
+            # Check if datetime column was created
+            if 'datetime' not in volume_df.columns:
+                logger.warning(f"No datetime column after process_timestamps for {asset} volume data. Columns: {list(volume_df.columns)}")
+                # Try to convert time column manually
+                if 'time' in volume_df.columns:
+                    volume_df['datetime'] = pd.to_datetime(volume_df['time'], unit='ms')
+                else:
+                    logger.error(f"No time column found for {asset} volume data")
+                    return None
+            
+            # Calculate total volume
+            if 'aggregated_buy_volume_usd' in volume_df.columns and 'aggregated_sell_volume_usd' in volume_df.columns:
+                volume_df['total_volume'] = volume_df['aggregated_buy_volume_usd'] + volume_df['aggregated_sell_volume_usd']
+                volume_df['buy_volume'] = volume_df['aggregated_buy_volume_usd']
+                volume_df['sell_volume'] = volume_df['aggregated_sell_volume_usd']
+        
+        # Merge the dataframes if both exist
+        if spot_df is not None and volume_df is not None:
+            # Ensure both have datetime column
+            if 'datetime' not in spot_df.columns or 'datetime' not in volume_df.columns:
+                logger.error(f"Missing datetime column. Spot has: {list(spot_df.columns)}, Volume has: {list(volume_df.columns)}")
+                return None
+                
+            # Sort both by datetime
+            spot_df = spot_df.sort_values('datetime')
+            volume_df = volume_df.sort_values('datetime')
+            
+            # Merge on nearest datetime (since they might have different granularities)
+            result_df = pd.merge_asof(
+                spot_df[['datetime', 'price']].dropna(),
+                volume_df[['datetime', 'total_volume', 'buy_volume', 'sell_volume']].dropna(),
+                on='datetime',
+                direction='nearest'
+            )
+            
+            # Filter based on timeframe
+            if not result_df.empty:
+                now = result_df['datetime'].max()
+                
+                if timeframe == '24h' or timeframe == '1d':
+                    cutoff = now - timedelta(days=1)
+                elif timeframe == '7d' or timeframe == '1w':
+                    cutoff = now - timedelta(days=7)
+                elif timeframe == '30d' or timeframe == '1m':
+                    cutoff = now - timedelta(days=30)
+                elif timeframe == '6m':
+                    cutoff = now - timedelta(days=180)
+                else:
+                    cutoff = now - timedelta(days=1)  # Default to 1 day
+                
+                result_df = result_df[result_df['datetime'] >= cutoff]
+                
+    except Exception as e:
+        logger.error(f"Error preparing price volume combined data for {asset}: {e}")
+        st.error(f"Error preparing data for {asset}: {str(e)}")
+    
+    return result_df
+
+def create_price_volume_combined_chart(df, asset='BTC', timeframe='24h'):
+    """
+    Create a dual-axis chart with price and volume.
+    
+    Parameters:
+    -----------
+    df : pandas.DataFrame
+        DataFrame with price and volume data
+    asset : str
+        Asset name for labeling
+    timeframe : str
+        Display timeframe
+    
+    Returns:
+    --------
+    plotly.graph_objects.Figure
+        Plotly figure object with dual y-axis
+    """
+    if df is None or df.empty:
+        return None
+    
+    from plotly.subplots import make_subplots
+    
+    # Create figure with secondary y-axis
+    fig = make_subplots(specs=[[{"secondary_y": True}]])
+    
+    # Asset colors
+    asset_colors = {
+        'BTC': '#FF9800',
+        'ETH': '#3F51B5',
+        'SOL': '#9C27B0',
+        'XRP': '#00BCD4'
+    }
+    
+    color = asset_colors.get(asset, '#2196F3')
+    
+    # Add price line trace (primary y-axis)
+    fig.add_trace(
+        go.Scatter(
+            x=df['datetime'],
+            y=df['price'],
+            name=f'{asset} Price',
+            line=dict(color=color, width=2),
+            hovertemplate='Price: $%{y:,.2f}<br>Time: %{x}<extra></extra>'
+        ),
+        secondary_y=False,
+    )
+    
+    # Add volume line trace with fill (secondary y-axis)
+    fig.add_trace(
+        go.Scatter(
+            x=df['datetime'],
+            y=df['total_volume'],
+            name='Futures Volume',
+            line=dict(color='#4CAF50', width=1.5),
+            fill='tozeroy',
+            fillcolor='rgba(76, 175, 80, 0.1)',
+            hovertemplate='Volume: $%{y:,.0f}<br>Time: %{x}<extra></extra>',
+            yaxis='y2'
+        ),
+        secondary_y=True,
+    )
+    
+    # Update layout
+    fig.update_xaxes(title_text="Time")
+    fig.update_yaxes(title_text="Price (USD)", secondary_y=False, tickformat='$,.0f')
+    fig.update_yaxes(title_text="Volume (USD)", secondary_y=True, tickprefix="$", tickformat=",")
+    
+    # Update overall layout
+    timeframe_labels = {
+        '24h': 'Last 24 Hours',
+        '1d': 'Last 24 Hours',
+        '7d': 'Last 7 Days',
+        '1w': 'Last Week',
+        '30d': 'Last 30 Days',
+        '1m': 'Last Month',
+        '6m': 'Last 6 Months'
+    }
+    
+    fig.update_layout(
+        title=f"{asset} Spot Price & Perpetual Futures Volume - {timeframe_labels.get(timeframe, timeframe)}",
+        height=600,
+        hovermode='x unified',
+        legend=dict(
+            orientation="h",
+            yanchor="bottom",
+            y=1.02,
+            xanchor="right",
+            x=1
+        )
+    )
+    
+    # Apply theme
+    fig = apply_chart_theme(fig)
+    
+    return fig
+
 def create_spot_chart(chart_data, timeframe='24h'):
     """
     Create a line chart of spot prices
@@ -738,6 +954,55 @@ def main():
         else:
             st.warning(f"No open interest data available for {oi_asset}.")
         
+        # 5. Spot Price & Perpetual Futures Volume
+        st.subheader("Spot Price & Perpetual Futures Volume")
+        
+        # Asset and timeframe selectors
+        col1, col2, col3 = st.columns([2, 3, 3])
+        with col1:
+            selected_asset = st.selectbox(
+                "Select Asset", 
+                options=SUPPORTED_ASSETS[:4],  # BTC, ETH, SOL, XRP
+                index=0,
+                key="price_volume_asset"
+            )
+        
+        with col2:
+            # Custom timeframe selector for this chart
+            pv_time_ranges = {
+                '1d': '1 Day',
+                '1w': '1 Week',
+                '1m': '1 Month',
+                '6m': '6 Months'
+            }
+            pv_timeframe = st.selectbox(
+                "Time Range",
+                options=list(pv_time_ranges.keys()),
+                format_func=lambda x: pv_time_ranges[x],
+                index=1,  # Default to 1 week
+                key="price_volume_timeframe"
+            )
+        
+        # Prepare combined data
+        combined_df = prepare_price_volume_combined_data(
+            data, 
+            asset=selected_asset, 
+            timeframe=pv_timeframe
+        )
+        
+        # Create and display chart
+        if combined_df is not None and not combined_df.empty:
+            price_volume_chart = create_price_volume_combined_chart(
+                combined_df, 
+                asset=selected_asset, 
+                timeframe=pv_timeframe
+            )
+            if price_volume_chart:
+                display_chart(price_volume_chart)
+            else:
+                st.warning(f"Unable to create chart for {selected_asset}")
+        else:
+            st.warning(f"No price or volume data available for {selected_asset}")
 
 if __name__ == "__main__":
     main()

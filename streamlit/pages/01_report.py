@@ -158,6 +158,36 @@ def load_report_data():
         if volume_data is not None and not volume_data.empty:
             data[volume_key] = volume_data
     
+    # Load comprehensive volume data for the new section
+    volume_data = {}
+    
+    # Ensure we have the full path including 'data' directory
+    if not latest_dir.startswith('data'):
+        data_path = os.path.join('data', latest_dir)
+    else:
+        data_path = latest_dir
+    
+    # Load aggregated taker buy/sell volume history
+    aggregated_volume_file = os.path.join(data_path, 'futures', 'taker_buy_sell', 'api_futures_aggregated_taker_buy_sell_volume_history.parquet')
+    if os.path.exists(aggregated_volume_file):
+        data['aggregated_volume_history'] = pd.read_parquet(aggregated_volume_file)
+        logger.info(f"Loaded aggregated volume history: {len(data['aggregated_volume_history'])} rows")
+    
+    # Load asset-specific volume history for all 4 assets
+    for asset in SUPPORTED_ASSETS[:4]:  # BTC, ETH, SOL, XRP
+        asset_volume_file = os.path.join(data_path, 'futures', 'taker_buy_sell', f'api_futures_taker_buy_sell_volume_history_{asset}.parquet')
+        if os.path.exists(asset_volume_file):
+            volume_data[asset] = pd.read_parquet(asset_volume_file)
+            logger.info(f"Loaded {asset} volume history: {len(volume_data[asset])} rows")
+        
+        # Load exchange-specific volume data
+        exchange_volume_file = os.path.join(data_path, 'futures', 'long_short_ratio', f'api_futures_taker_buy_sell_volume_exchange_list_{asset}.parquet')
+        if os.path.exists(exchange_volume_file):
+            volume_data[f'{asset}_exchange_volume'] = pd.read_parquet(exchange_volume_file)
+            logger.info(f"Loaded {asset} exchange volume data: {len(volume_data[f'{asset}_exchange_volume'])} rows")
+    
+    data['volume'] = volume_data
+    
     return data
 
 def prepare_price_comparison_dataframe(data):
@@ -1275,7 +1305,7 @@ def main():
                 )
                 
                 # Add insights
-                st.markdown("**💡 Key Insights:**")
+                st.markdown("**💡 Stats:**")
                 
                 # Calculate some statistics
                 insights = []
@@ -1302,26 +1332,13 @@ def main():
                 for insight in insights:
                     st.write(f"- {insight}")
                 
-                # Add download functionality
-                if not comprehensive_table.empty:
-                    csv_data = comprehensive_table.to_csv(index=False)
-                    st.download_button(
-                        label="📥 Download Comprehensive Funding Rate Data (CSV)",
-                        data=csv_data,
-                        file_name=f"comprehensive_funding_rates_{datetime.now().strftime('%Y%m%d')}.csv",
-                        mime="text/csv",
-                        key="report_download_comprehensive_funding"
-                    )
+
                 
                 # Explanation section
                 st.markdown("""
-                **📋 Understanding Annualized Funding Rates:**
-                - **Asset Filter**: Only shows top 20 crypto assets by market cap (BTC, ETH, USDT, XRP, etc.)
-                - **1d Period**: Daily accumulated rate × 365 = Annual equivalent
-                - **7d Period**: Weekly accumulated rate × 52.14 = Annual equivalent  
-                - **30d Period**: Monthly accumulated rate × 12.17 = Annual equivalent
-                - **365d Period**: Already represents the full annual accumulated rate
-                - All rates are displayed as annualized percentages for easy comparison
+                **📋 Annualized Funding Rates:**
+                - **Asset Filter**: Shows top 20 crypto assets by market cap (BTC, ETH, USDT, XRP, etc.)
+                - All rates are displayed as annualized percentages 
 
 
                 """)
@@ -1329,6 +1346,654 @@ def main():
                 st.warning("No comprehensive funding rate data could be processed.")
         else:
             st.warning("No accumulated funding rate data found for any time period.")
+        
+        # 7. Comprehensive Futures Volume Analysis Section
+        st.header("📊 Comprehensive Futures Volume Analysis")
+        st.write("Deep dive into perpetual futures trading volume across assets, exchanges, and time periods.")
+        
+        # Check if volume data is available
+        if 'volume' in data and data['volume']:
+            # Create tabs for different views
+            volume_tab1, volume_tab2, volume_tab3, volume_tab4 = st.tabs([
+                "📈 Asset Volume Overview", 
+                "🏢 Exchange Volume Distribution", 
+                "📊 Volume Trends & Momentum",
+                "🔄 Buy/Sell Flow Analysis"
+            ])
+            
+            with volume_tab1:
+                st.subheader("Asset Volume Overview")
+                
+                # Prepare asset volume summary
+                asset_volume_summary = []
+                for asset in SUPPORTED_ASSETS[:4]:  # BTC, ETH, SOL, XRP
+                    if asset in data['volume']:
+                        volume_df = data['volume'][asset].copy()
+                        if not volume_df.empty and 'aggregated_buy_volume_usd' in volume_df.columns:
+                            # Calculate metrics
+                            volume_df['total_volume'] = volume_df['aggregated_buy_volume_usd'] + volume_df['aggregated_sell_volume_usd']
+                            
+                            # Get latest and average volumes
+                            latest_volume = volume_df['total_volume'].iloc[-1] if len(volume_df) > 0 else 0
+                            avg_volume_7d = volume_df['total_volume'].tail(7).mean() if len(volume_df) >= 7 else latest_volume
+                            avg_volume_30d = volume_df['total_volume'].tail(30).mean() if len(volume_df) >= 30 else latest_volume
+                            
+                            # Calculate growth rates
+                            volume_growth_7d = ((latest_volume / avg_volume_7d) - 1) * 100 if avg_volume_7d > 0 else 0
+                            volume_growth_30d = ((latest_volume / avg_volume_30d) - 1) * 100 if avg_volume_30d > 0 else 0
+                            
+                            # Get buy/sell ratio
+                            buy_ratio = volume_df['aggregated_buy_volume_usd'].iloc[-1] / volume_df['total_volume'].iloc[-1] if volume_df['total_volume'].iloc[-1] > 0 else 0.5
+                            
+                            # Check if we have exchange-specific data
+                            exchange_count = 0
+                            if f'{asset}_exchange_volume' in data['volume']:
+                                exchange_df = data['volume'][f'{asset}_exchange_volume']
+                                if not exchange_df.empty and 'exchange_list' in exchange_df.columns:
+                                    # Count unique exchanges
+                                    exchanges = set()
+                                    for idx, row in exchange_df.iterrows():
+                                        # Handle both dict and list formats for exchange_list
+                                        exchange_list = row['exchange_list']
+                                        exchanges_to_process = []
+                                        
+                                        if isinstance(exchange_list, dict):
+                                            # Single exchange per row format
+                                            exchanges_to_process = [exchange_list]
+                                        elif isinstance(exchange_list, list):
+                                            # Multiple exchanges per row format
+                                            exchanges_to_process = exchange_list
+                                        
+                                        for ex in exchanges_to_process:
+                                            if isinstance(ex, dict) and 'exchange' in ex:
+                                                exchanges.add(ex['exchange'])
+                                    exchange_count = len(exchanges)
+                            
+                            asset_volume_summary.append({
+                                'Asset': asset,
+                                'Latest 24h Volume': latest_volume,
+                                'Avg Volume (7d)': avg_volume_7d,
+                                'Avg Volume (30d)': avg_volume_30d,
+                                'Volume Change (7d)': volume_growth_7d,
+                                'Volume Change (30d)': volume_growth_30d,
+                                'Buy Ratio': buy_ratio,
+                                'Exchange Count': exchange_count
+                            })
+                
+                if asset_volume_summary:
+                    volume_summary_df = pd.DataFrame(asset_volume_summary)
+                    
+                    # Display summary metrics
+                    col1, col2, col3, col4 = st.columns(4)
+                    
+                    with col1:
+                        total_volume_24h = volume_summary_df['Latest 24h Volume'].sum()
+                        display_metric_card(
+                            "Total 24h Volume",
+                            format_currency(total_volume_24h, abbreviate=True),
+                            "All Top 4 Assets"
+                        )
+                    
+                    with col2:
+                        avg_buy_ratio = volume_summary_df['Buy Ratio'].mean()
+                        display_metric_card(
+                            "Average Buy Ratio",
+                            f"{avg_buy_ratio:.1%}",
+                            "Bullish" if avg_buy_ratio > 0.52 else "Bearish" if avg_buy_ratio < 0.48 else "Neutral"
+                        )
+                    
+                    with col3:
+                        top_volume_asset = volume_summary_df.loc[volume_summary_df['Latest 24h Volume'].idxmax(), 'Asset']
+                        top_volume = volume_summary_df['Latest 24h Volume'].max()
+                        display_metric_card(
+                            "Highest Volume Asset",
+                            top_volume_asset,
+                            format_currency(top_volume, abbreviate=True)
+                        )
+                    
+                    with col4:
+                        avg_growth_7d = volume_summary_df['Volume Change (7d)'].mean()
+                        display_metric_card(
+                            "Avg Volume Growth (7d)",
+                            f"{avg_growth_7d:+.1f}%",
+                            "Increasing" if avg_growth_7d > 5 else "Stable" if avg_growth_7d > -5 else "Decreasing"
+                        )
+                    
+                    # Display detailed table
+                    st.subheader("Detailed Volume Metrics by Asset")
+                    
+                    volume_format_dict = {
+                        'Latest 24h Volume': lambda x: format_currency(x, abbreviate=True),
+                        'Avg Volume (7d)': lambda x: format_currency(x, abbreviate=True),
+                        'Avg Volume (30d)': lambda x: format_currency(x, abbreviate=True),
+                        'Volume Change (7d)': lambda x: f"{x:+.1f}%",
+                        'Volume Change (30d)': lambda x: f"{x:+.1f}%",
+                        'Buy Ratio': lambda x: f"{x:.1%}",
+                        'Exchange Count': lambda x: f"{int(x)}" if x > 0 else "N/A"
+                    }
+                    
+                    create_formatted_table(
+                        volume_summary_df,
+                        format_dict=volume_format_dict,
+                        emphasize_negatives=True,
+                        compact_display=True
+                    )
+                    
+                    # Volume comparison chart
+                    st.subheader("24h Volume Comparison")
+                    
+                    fig_volume_comp = go.Figure()
+                    
+                    # Sort by volume for better visualization
+                    volume_summary_df_sorted = volume_summary_df.sort_values('Latest 24h Volume', ascending=True)
+                    
+                    fig_volume_comp.add_trace(go.Bar(
+                        x=volume_summary_df_sorted['Latest 24h Volume'],
+                        y=volume_summary_df_sorted['Asset'],
+                        orientation='h',
+                        text=[format_currency(v, abbreviate=True) for v in volume_summary_df_sorted['Latest 24h Volume']],
+                        textposition='outside',
+                        marker_color='rgba(99, 110, 250, 0.8)'
+                    ))
+                    
+                    fig_volume_comp.update_layout(
+                        title="24-Hour Futures Volume by Asset",
+                        xaxis_title="Volume (USD)",
+                        yaxis_title=None,
+                        height=400,
+                        showlegend=False
+                    )
+                    
+                    display_chart(apply_chart_theme(fig_volume_comp))
+                    
+                    st.markdown("""
+                    **Volume Analysis Insights:**
+                    - Higher volumes indicate more liquid markets with tighter spreads
+                    - Buy ratio >52% suggests bullish sentiment, <48% suggests bearish sentiment
+                    - Volume growth shows increasing market interest and trading activity
+                    - Exchange count indicates market breadth and accessibility
+                    """)
+            
+            with volume_tab2:
+                st.subheader("Exchange Volume Distribution")
+                
+                # Aggregate exchange volumes across all assets
+                exchange_volumes = {}
+                
+                for asset in SUPPORTED_ASSETS[:4]:  # BTC, ETH, SOL, XRP
+                    if f'{asset}_exchange_volume' in data['volume']:
+                        exchange_df = data['volume'][f'{asset}_exchange_volume']
+                        if not exchange_df.empty and 'exchange_list' in exchange_df.columns:
+                            for idx, row in exchange_df.iterrows():
+                                if isinstance(row['exchange_list'], list):
+                                    for ex in row['exchange_list']:
+                                        if isinstance(ex, dict):
+                                            exchange_name = ex.get('exchange', '')
+                                            buy_vol = ex.get('buy_vol_usd', 0)
+                                            sell_vol = ex.get('sell_vol_usd', 0)
+                                            total_vol = buy_vol + sell_vol
+                                            
+                                            if exchange_name and total_vol > 0:
+                                                if exchange_name not in exchange_volumes:
+                                                    exchange_volumes[exchange_name] = {
+                                                        'total_volume': 0,
+                                                        'buy_volume': 0,
+                                                        'sell_volume': 0,
+                                                        'assets': set()
+                                                    }
+                                                
+                                                exchange_volumes[exchange_name]['total_volume'] += total_vol
+                                                exchange_volumes[exchange_name]['buy_volume'] += buy_vol
+                                                exchange_volumes[exchange_name]['sell_volume'] += sell_vol
+                                                exchange_volumes[exchange_name]['assets'].add(asset)
+                
+                if exchange_volumes:
+                    # Convert to DataFrame
+                    exchange_data = []
+                    for exchange, metrics in exchange_volumes.items():
+                        exchange_data.append({
+                            'Exchange': exchange,
+                            'Total Volume': metrics['total_volume'],
+                            'Buy Volume': metrics['buy_volume'],
+                            'Sell Volume': metrics['sell_volume'],
+                            'Buy Ratio': metrics['buy_volume'] / metrics['total_volume'] if metrics['total_volume'] > 0 else 0.5,
+                            'Asset Count': len(metrics['assets']),
+                            'Market Share': 0  # Will calculate after
+                        })
+                    
+                    exchange_df = pd.DataFrame(exchange_data)
+                    total_market_volume = exchange_df['Total Volume'].sum()
+                    exchange_df['Market Share'] = exchange_df['Total Volume'] / total_market_volume if total_market_volume > 0 else 0
+                    
+                    # Sort by volume
+                    exchange_df = exchange_df.sort_values('Total Volume', ascending=False)
+                    
+                    # Display top exchanges metrics
+                    col1, col2, col3 = st.columns(3)
+                    
+                    with col1:
+                        top_exchange = exchange_df.iloc[0]['Exchange'] if not exchange_df.empty else "N/A"
+                        top_share = exchange_df.iloc[0]['Market Share'] if not exchange_df.empty else 0
+                        display_metric_card(
+                            "Top Exchange",
+                            top_exchange,
+                            f"{top_share:.1%} market share"
+                        )
+                    
+                    with col2:
+                        top_5_share = exchange_df.head(5)['Market Share'].sum() if len(exchange_df) >= 5 else exchange_df['Market Share'].sum()
+                        display_metric_card(
+                            "Top 5 Exchange Share",
+                            f"{top_5_share:.1%}",
+                            "Market concentration"
+                        )
+                    
+                    with col3:
+                        active_exchanges = len(exchange_df)
+                        display_metric_card(
+                            "Active Exchanges",
+                            str(active_exchanges),
+                            "Trading top 4 assets"
+                        )
+                    
+                    # Market share pie chart
+                    st.subheader("Exchange Market Share Distribution")
+                    
+                    # Take top 10 exchanges for pie chart
+                    top_exchanges = exchange_df.head(10).copy()
+                    if len(exchange_df) > 10:
+                        others_share = exchange_df.iloc[10:]['Market Share'].sum()
+                        others_volume = exchange_df.iloc[10:]['Total Volume'].sum()
+                        top_exchanges = pd.concat([
+                            top_exchanges,
+                            pd.DataFrame([{
+                                'Exchange': 'Others',
+                                'Total Volume': others_volume,
+                                'Market Share': others_share
+                            }])
+                        ])
+                    
+                    fig_pie = go.Figure(data=[go.Pie(
+                        labels=top_exchanges['Exchange'],
+                        values=top_exchanges['Market Share'],
+                        hole=0.4,
+                        textinfo='label+percent',
+                        textposition='auto'
+                    )])
+                    
+                    fig_pie.update_layout(
+                        title="Exchange Market Share (24h Volume)",
+                        height=500
+                    )
+                    
+                    display_chart(apply_chart_theme(fig_pie))
+                    
+                    # Detailed exchange table
+                    st.subheader("Exchange Volume Details")
+                    
+                    display_exchange_df = pd.DataFrame({
+                        'Exchange': exchange_df['Exchange'],
+                        'Total Volume (24h)': exchange_df['Total Volume'],
+                        'Market Share': exchange_df['Market Share'],
+                        'Buy Ratio': exchange_df['Buy Ratio'],
+                        'Asset Coverage': exchange_df['Asset Count']
+                    })
+                    
+                    exchange_format_dict = {
+                        'Total Volume (24h)': lambda x: format_currency(x, abbreviate=True),
+                        'Market Share': lambda x: f"{x:.2%}",
+                        'Buy Ratio': lambda x: f"{x:.1%}",
+                        'Asset Coverage': lambda x: f"{int(x)}/4"
+                    }
+                    
+                    create_formatted_table(
+                        display_exchange_df.head(15),  # Show top 15
+                        format_dict=exchange_format_dict,
+                        emphasize_negatives=False,
+                        compact_display=True
+                    )
+                    
+                    st.markdown("""
+                    **Exchange Distribution Insights:**
+                    - Market concentration shows dominance of top exchanges
+                    - Higher asset coverage indicates better liquidity across different markets
+                    - Buy ratio variations across exchanges can indicate arbitrage opportunities
+                    - Consider exchange reliability and regulatory status when selecting venues
+                    """)
+            
+            with volume_tab3:
+                st.subheader("Volume Trends & Momentum Analysis")
+                
+                # Time period selector
+                trend_period = st.selectbox(
+                    "Select Analysis Period",
+                    options=['7d', '30d', '90d', 'All'],
+                    index=1,
+                    key='report_volume_trend_period'
+                )
+                
+                # Asset selector for detailed analysis
+                selected_trend_assets = st.multiselect(
+                    "Select Assets for Trend Analysis",
+                    options=SUPPORTED_ASSETS[:4],  # BTC, ETH, SOL, XRP
+                    default=['BTC', 'ETH'],
+                    key='report_volume_trend_assets'
+                )
+                
+                if selected_trend_assets:
+                    # Create volume trend chart
+                    fig_trend = go.Figure()
+                    
+                    for asset in selected_trend_assets:
+                        if asset in data['volume']:
+                            volume_df = data['volume'][asset].copy()
+                            if 'time' in volume_df.columns:
+                                volume_df['datetime'] = pd.to_datetime(volume_df['time'], unit='ms')
+                                volume_df = volume_df.sort_values('datetime')
+                                volume_df['total_volume'] = volume_df['aggregated_buy_volume_usd'] + volume_df['aggregated_sell_volume_usd']
+                                
+                                # Filter by period
+                                if trend_period == '7d':
+                                    volume_df = volume_df.tail(7)
+                                elif trend_period == '30d':
+                                    volume_df = volume_df.tail(30)
+                                elif trend_period == '90d':
+                                    volume_df = volume_df.tail(90)
+                                
+                                # Add trace
+                                fig_trend.add_trace(go.Scatter(
+                                    x=volume_df['datetime'],
+                                    y=volume_df['total_volume'],
+                                    name=asset,
+                                    mode='lines+markers',
+                                    line=dict(width=2)
+                                ))
+                    
+                    fig_trend.update_layout(
+                        title=f"Volume Trends - {trend_period} Period",
+                        xaxis_title="Date",
+                        yaxis_title="Daily Volume (USD)",
+                        hovermode='x unified',
+                        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1)
+                    )
+                    
+                    display_chart(apply_chart_theme(fig_trend))
+                    
+                    # Volume momentum indicators
+                    st.subheader("Volume Momentum Indicators")
+                    
+                    momentum_data = []
+                    for asset in selected_trend_assets:
+                        if asset in data['volume']:
+                            volume_df = data['volume'][asset].copy()
+                            if not volume_df.empty and 'aggregated_buy_volume_usd' in volume_df.columns:
+                                volume_df['total_volume'] = volume_df['aggregated_buy_volume_usd'] + volume_df['aggregated_sell_volume_usd']
+                                
+                                # Calculate various momentum indicators
+                                if len(volume_df) >= 30:
+                                    # Simple moving averages
+                                    sma_7 = volume_df['total_volume'].tail(7).mean()
+                                    sma_30 = volume_df['total_volume'].tail(30).mean()
+                                    current_vol = volume_df['total_volume'].iloc[-1]
+                                    
+                                    # Momentum calculations
+                                    momentum_7d = (current_vol / sma_7 - 1) * 100 if sma_7 > 0 else 0
+                                    momentum_30d = (current_vol / sma_30 - 1) * 100 if sma_30 > 0 else 0
+                                    
+                                    # Volatility
+                                    vol_std = volume_df['total_volume'].tail(30).std()
+                                    vol_mean = volume_df['total_volume'].tail(30).mean()
+                                    vol_cv = (vol_std / vol_mean * 100) if vol_mean > 0 else 0
+                                    
+                                    # Trend strength (linear regression slope) - using numpy instead of scipy
+                                    x = np.arange(len(volume_df.tail(30)))
+                                    y = volume_df['total_volume'].tail(30).values
+                                    
+                                    # Manual linear regression calculation
+                                    x_mean = x.mean()
+                                    y_mean = y.mean()
+                                    numerator = ((x - x_mean) * (y - y_mean)).sum()
+                                    denominator = ((x - x_mean) ** 2).sum()
+                                    
+                                    if denominator != 0:
+                                        slope = numerator / denominator
+                                        # Calculate R-squared
+                                        y_pred = slope * (x - x_mean) + y_mean
+                                        ss_res = ((y - y_pred) ** 2).sum()
+                                        ss_tot = ((y - y_mean) ** 2).sum()
+                                        r_squared = 1 - (ss_res / ss_tot) if ss_tot != 0 else 0
+                                    else:
+                                        slope = 0
+                                        r_squared = 0
+                                    
+                                    momentum_data.append({
+                                        'Asset': asset,
+                                        'Current Volume': current_vol,
+                                        '7D MA': sma_7,
+                                        '30D MA': sma_30,
+                                        '7D Momentum': momentum_7d,
+                                        '30D Momentum': momentum_30d,
+                                        'Volatility (CV)': vol_cv,
+                                        'Trend Strength': r_squared
+                                    })
+                    
+                    if momentum_data:
+                        momentum_df = pd.DataFrame(momentum_data)
+                        
+                        momentum_format_dict = {
+                            'Current Volume': lambda x: format_currency(x, abbreviate=True),
+                            '7D MA': lambda x: format_currency(x, abbreviate=True),
+                            '30D MA': lambda x: format_currency(x, abbreviate=True),
+                            '7D Momentum': lambda x: f"{x:+.1f}%",
+                            '30D Momentum': lambda x: f"{x:+.1f}%",
+                            'Volatility (CV)': lambda x: f"{x:.1f}%",
+                            'Trend Strength': lambda x: f"{x:.2f}"
+                        }
+                        
+                        create_formatted_table(
+                            momentum_df,
+                            format_dict=momentum_format_dict,
+                            emphasize_negatives=True,
+                            compact_display=True
+                        )
+                        
+                        st.markdown("""
+                        **Momentum Indicators Explained:**
+                        - **7D/30D Momentum**: Current volume vs moving average (>0% = above average)
+                        - **Volatility (CV)**: Coefficient of variation - higher values indicate more volatile volume
+                        - **Trend Strength**: R² value from linear regression (0-1, higher = stronger trend)
+                        - Positive momentum with low volatility suggests sustainable volume growth
+                        """)
+            
+            with volume_tab4:
+                st.subheader("Buy/Sell Flow Analysis")
+                
+                # Create buy/sell imbalance chart for all assets
+                if 'aggregated_volume_history' in data and data['aggregated_volume_history'] is not None:
+                    agg_volume_df = data['aggregated_volume_history'].copy()
+                    agg_volume_df['datetime'] = pd.to_datetime(agg_volume_df['time'], unit='ms')
+                    agg_volume_df = agg_volume_df.sort_values('datetime')
+                    
+                    # Calculate metrics
+                    agg_volume_df['total_volume'] = agg_volume_df['aggregated_buy_volume_usd'] + agg_volume_df['aggregated_sell_volume_usd']
+                    agg_volume_df['buy_ratio'] = agg_volume_df['aggregated_buy_volume_usd'] / agg_volume_df['total_volume']
+                    agg_volume_df['net_flow'] = agg_volume_df['aggregated_buy_volume_usd'] - agg_volume_df['aggregated_sell_volume_usd']
+                    agg_volume_df['flow_imbalance'] = agg_volume_df['net_flow'] / agg_volume_df['total_volume']
+                    
+                    # Time period selector for flow analysis
+                    flow_period = st.selectbox(
+                        "Select Flow Analysis Period",
+                        options=['24h', '7d', '30d'],
+                        index=1,
+                        key='report_flow_period'
+                    )
+                    
+                    # Filter data based on period
+                    if flow_period == '24h':
+                        flow_df = agg_volume_df.tail(6)  # 6 * 4h = 24h
+                    elif flow_period == '7d':
+                        flow_df = agg_volume_df.tail(42)  # 42 * 4h = 7 days
+                    else:  # 30d
+                        flow_df = agg_volume_df.tail(180)  # 180 * 4h = 30 days
+                    
+                    # Flow metrics
+                    col1, col2, col3, col4 = st.columns(4)
+                    
+                    with col1:
+                        cumulative_net_flow = flow_df['net_flow'].sum()
+                        display_metric_card(
+                            f"Net Flow ({flow_period})",
+                            format_currency(cumulative_net_flow, abbreviate=True),
+                            "Buy pressure" if cumulative_net_flow > 0 else "Sell pressure"
+                        )
+                    
+                    with col2:
+                        avg_buy_ratio = flow_df['buy_ratio'].mean()
+                        display_metric_card(
+                            f"Avg Buy Ratio ({flow_period})",
+                            f"{avg_buy_ratio:.1%}",
+                            "Bullish" if avg_buy_ratio > 0.52 else "Bearish" if avg_buy_ratio < 0.48 else "Neutral"
+                        )
+                    
+                    with col3:
+                        flow_volatility = flow_df['flow_imbalance'].std()
+                        display_metric_card(
+                            "Flow Volatility",
+                            f"{flow_volatility:.3f}",
+                            "High" if flow_volatility > 0.1 else "Moderate" if flow_volatility > 0.05 else "Low"
+                        )
+                    
+                    with col4:
+                        # Trend direction based on linear regression - using numpy
+                        x = np.arange(len(flow_df))
+                        y = flow_df['buy_ratio'].values
+                        
+                        # Simple slope calculation using numpy
+                        if len(x) > 1:
+                            # Calculate slope using least squares
+                            x_mean = x.mean()
+                            y_mean = y.mean()
+                            numerator = ((x - x_mean) * (y - y_mean)).sum()
+                            denominator = ((x - x_mean) ** 2).sum()
+                            slope = numerator / denominator if denominator != 0 else 0
+                        else:
+                            slope = 0
+                        
+                        trend_direction = "Increasing" if slope > 0.0001 else "Decreasing" if slope < -0.0001 else "Stable"
+                        display_metric_card(
+                            "Buy Pressure Trend",
+                            trend_direction,
+                            f"Slope: {slope:.5f}"
+                        )
+                    
+                    # Create flow imbalance chart
+                    fig_flow = go.Figure()
+                    
+                    # Add buy volume (positive)
+                    fig_flow.add_trace(go.Bar(
+                        x=flow_df['datetime'],
+                        y=flow_df['aggregated_buy_volume_usd'],
+                        name='Buy Volume',
+                        marker_color='rgba(0, 255, 0, 0.7)',
+                        hovertemplate='Buy: $%{y:,.0f}<extra></extra>'
+                    ))
+                    
+                    # Add sell volume (negative)
+                    fig_flow.add_trace(go.Bar(
+                        x=flow_df['datetime'],
+                        y=-flow_df['aggregated_sell_volume_usd'],
+                        name='Sell Volume',
+                        marker_color='rgba(255, 0, 0, 0.7)',
+                        hovertemplate='Sell: $%{y:,.0f}<extra></extra>'
+                    ))
+                    
+                    # Add net flow line
+                    fig_flow.add_trace(go.Scatter(
+                        x=flow_df['datetime'],
+                        y=flow_df['net_flow'],
+                        name='Net Flow',
+                        line=dict(color='white', width=2),
+                        yaxis='y2',
+                        hovertemplate='Net: $%{y:,.0f}<extra></extra>'
+                    ))
+                    
+                    fig_flow.update_layout(
+                        title=f"Buy/Sell Volume Flow - {flow_period}",
+                        xaxis_title="Time",
+                        yaxis_title="Volume (USD)",
+                        yaxis2=dict(
+                            title="Net Flow (USD)",
+                            overlaying='y',
+                            side='right'
+                        ),
+                        barmode='relative',
+                        hovermode='x unified',
+                        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1)
+                    )
+                    
+                    display_chart(apply_chart_theme(fig_flow))
+                    
+                    # Buy/Sell ratio heatmap by asset
+                    st.subheader("Buy/Sell Ratio by Asset")
+                    
+                    # Prepare heatmap data
+                    heatmap_data = []
+                    for asset in SUPPORTED_ASSETS[:4]:  # BTC, ETH, SOL, XRP
+                        if asset in data['volume']:
+                            asset_volume_df = data['volume'][asset].copy()
+                            if not asset_volume_df.empty and 'aggregated_buy_volume_usd' in asset_volume_df.columns:
+                                asset_volume_df['buy_ratio'] = asset_volume_df['aggregated_buy_volume_usd'] / (
+                                    asset_volume_df['aggregated_buy_volume_usd'] + asset_volume_df['aggregated_sell_volume_usd']
+                                )
+                                
+                                # Get ratios for different periods
+                                current_ratio = asset_volume_df['buy_ratio'].iloc[-1] if len(asset_volume_df) > 0 else 0.5
+                                avg_7d = asset_volume_df['buy_ratio'].tail(7).mean() if len(asset_volume_df) >= 7 else current_ratio
+                                avg_30d = asset_volume_df['buy_ratio'].tail(30).mean() if len(asset_volume_df) >= 30 else current_ratio
+                                
+                                heatmap_data.append({
+                                    'Asset': asset,
+                                    'Current': current_ratio,
+                                    '7D Average': avg_7d,
+                                    '30D Average': avg_30d
+                                })
+                    
+                    if heatmap_data:
+                        heatmap_df = pd.DataFrame(heatmap_data)
+                        heatmap_df = heatmap_df.set_index('Asset')
+                        
+                        # Create heatmap
+                        fig_heatmap = go.Figure(data=go.Heatmap(
+                            z=heatmap_df.values,
+                            x=heatmap_df.columns,
+                            y=heatmap_df.index,
+                            colorscale='RdYlGn',
+                            zmid=0.5,
+                            text=[[f"{val:.1%}" for val in row] for row in heatmap_df.values],
+                            texttemplate="%{text}",
+                            textfont={"size": 12},
+                            colorbar=dict(title="Buy Ratio")
+                        ))
+                        
+                        fig_heatmap.update_layout(
+                            title="Buy/Sell Ratio Heatmap",
+                            xaxis_title="Time Period",
+                            yaxis_title="Asset",
+                            height=400
+                        )
+                        
+                        display_chart(apply_chart_theme(fig_heatmap))
+                        
+                        st.markdown("""
+                        **Buy/Sell Flow Analysis Insights:**
+                        - **Net Flow**: Positive = more buying pressure, Negative = more selling pressure
+                        - **Buy Ratio >52%**: Strong bullish sentiment, likely to see positive funding rates
+                        - **Flow Volatility**: High volatility suggests uncertain market direction
+                        - **Trend Analysis**: Consistent buy/sell pressure indicates market conviction
+                        - **Cross-Asset Comparison**: Identify which assets have strongest directional bias
+                        """)
+        else:
+            st.warning("No futures volume data available. Please check data sources.")
 
 if __name__ == "__main__":
     main()

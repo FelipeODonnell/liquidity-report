@@ -1347,9 +1347,9 @@ def main():
         else:
             st.warning("No accumulated funding rate data found for any time period.")
         
-        # 7. Comprehensive Futures Volume Analysis Section
-        st.header("📊 Comprehensive Futures Volume Analysis")
-        st.write("Deep dive into perpetual futures trading volume across assets, exchanges, and time periods.")
+        # 7. Futures Volume Analysis Section
+        st.header("📊 Futures Volume Analysis")
+        st.write("Perpetual futures trading volume across assets, exchanges, and time periods.")
         
         # Check if volume data is available
         if 'volume' in data and data['volume']:

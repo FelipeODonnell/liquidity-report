@@ -104,3 +104,5 @@ This will generate a `data-saved.md` file showing which API endpoints have succe
 - Added comprehensive data structure documentation
 - Optimized chart rendering and data processing
 
+
+source .venv/bin/activate

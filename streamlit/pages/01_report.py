@@ -1292,6 +1292,9 @@ def main():
                 if filter_asset != "All":
                     display_table = display_table[display_table['Asset'] == filter_asset]
                 
+                # Exclude exchanges ending with '_TOKEN'
+                display_table = display_table[~display_table['Exchange'].str.endswith('_TOKEN')]
+                
                 # Format the table for display
                 format_dict = {}
                 for col in display_table.columns:
@@ -1303,36 +1306,6 @@ def main():
                     display_table,
                     format_dict=format_dict
                 )
-                
-                # Add insights
-                st.markdown("**💡 Stats:**")
-                
-                # Calculate some statistics
-                insights = []
-                for period in ['1d', '7d', '30d', '365d']:
-                    col_name = f'{period} Annualized (%)'
-                    if col_name in comprehensive_table.columns:
-                        # Extract numeric values for analysis
-                        numeric_values = comprehensive_table[col_name].str.replace('%', '').str.replace('N/A', '').replace('', np.nan)
-                        numeric_values = pd.to_numeric(numeric_values, errors='coerce').dropna()
-                        
-                        if not numeric_values.empty:
-                            avg_rate = numeric_values.mean()
-                            max_rate = numeric_values.max()
-                            max_asset_exchange = comprehensive_table.loc[
-                                comprehensive_table[col_name] == f"{max_rate:.2f}%", 
-                                ['Asset', 'Exchange']
-                            ]
-                            
-                            if not max_asset_exchange.empty:
-                                asset = max_asset_exchange.iloc[0]['Asset']
-                                exchange = max_asset_exchange.iloc[0]['Exchange']
-                                insights.append(f"**{period} Period**: Average annualized rate: {avg_rate:.2f}%, Highest: {max_rate:.2f}% ({asset} on {exchange})")
-                
-                for insight in insights:
-                    st.write(f"- {insight}")
-                
-
                 
                 # Explanation section
                 st.markdown("""

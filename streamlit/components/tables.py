@@ -348,13 +348,25 @@ def create_formatted_table(df, format_dict=None, hide_index=True, use_container_
         column_config = new_column_config
     
     # Create streamlit dataframe with enhanced configuration
-    return st.dataframe(
-        formatted_df,
-        use_container_width=use_container_width,
-        hide_index=hide_index,
-        height=height,
-        column_config=column_config
-    )
+    # Build kwargs dictionary to avoid passing None height
+    dataframe_kwargs = {
+        "data": formatted_df,
+        "use_container_width": use_container_width,
+        "hide_index": hide_index,
+        "column_config": column_config
+    }
+
+    # Only add height if it's explicitly set and valid
+    if height is not None and height > 0:
+        dataframe_kwargs["height"] = height
+    elif height is not None and height <= 0:
+        # If an invalid height was explicitly passed, use a sensible default
+        # Calculate based on number of rows (35px per row + 50px for header)
+        calculated_height = min(600, max(150, len(formatted_df) * 35 + 50))
+        dataframe_kwargs["height"] = calculated_height
+    # If height is None, don't include it and let Streamlit use its default
+
+    return st.dataframe(**dataframe_kwargs)
 
 def create_crypto_table(df, asset_col=None, price_col=None, change_col=None, volume_col=None, market_cap_col=None, format_column_names=True):
     """
